@@ -3,8 +3,10 @@
 # one to a Teams channel via the Power Automate incoming webhook.
 #
 # Usage:
-#   ./poll_and_notify.sh [WINDOW_HOURS]
+#   ./poll_and_notify.sh [-v|--verbose] [WINDOW_HOURS]
 #
+#   -v, --verbose  print the raw SailPoint response and the generated
+#                  Teams card payload on stderr, per run.
 #   WINDOW_HOURS   how far back to look on the first run (default 4).
 #                  Ignored once .poll_state exists — delete the state
 #                  file to reset the cursor.
@@ -12,7 +14,8 @@
 # Examples:
 #   ./poll_and_notify.sh                           # 4h lookback
 #   ./poll_and_notify.sh 24                        # 24h lookback
-#   while true; do ./poll_and_notify.sh; sleep 60; done
+#   ./poll_and_notify.sh -v                        # verbose
+#   ./run_poller.sh 60                             # loop every 60s
 #
 # Auto-loads .env (next to the script) if present, so no need to
 # `source .env` first. Existing env vars take precedence.
@@ -47,7 +50,20 @@ fi
 : "${TEAMS_WEBHOOK:?}"
 
 STATE_FILE="${STATE_FILE:-$SCRIPT_DIR/.poll_state}"
-WINDOW_HOURS="${1:-4}"
+
+# --- Parse args (order-independent) ---
+VERBOSE=0
+WINDOW_HOURS=4
+while (( $# )); do
+  case "$1" in
+    -v|--verbose) VERBOSE=1; shift ;;
+    -h|--help)
+      sed -n '1,30p' "$0"; exit 0 ;;
+    *)            WINDOW_HOURS="$1"; shift ;;
+  esac
+done
+
+log_verbose() { (( VERBOSE )) && printf "[verbose] %s\n" "$*" >&2 || true; }
 
 # On first run (no state file), seed "last seen" to now - WINDOW_HOURS.
 if [[ -f "$STATE_FILE" ]]; then
@@ -77,6 +93,12 @@ RESP="$(curl -sS -G "${SAILPOINT_TENANT_API}/v2025/access-request-status" \
     --data-urlencode "limit=50" \
     -H "Authorization: Bearer ${TOKEN}" \
     -H "Accept: application/json")"
+
+if (( VERBOSE )); then
+  echo "==== SailPoint /v2025/access-request-status response ====" >&2
+  echo "$RESP" | jq . >&2 2>/dev/null || echo "$RESP" >&2
+  echo "==== end response ====" >&2
+fi
 
 # Fail fast if SailPoint returned an error object instead of an array.
 if ! echo "$RESP" | jq -e 'type == "array"' >/dev/null 2>&1; then
@@ -185,6 +207,21 @@ while IFS= read -r ITEM; do
         }
       }]
     }')"
+
+  if (( VERBOSE )); then
+    echo "---- event -------------------------------------------------" >&2
+    echo "modified   : $MOD"          >&2
+    echo "requestType: $REQTYPE"      >&2
+    echo "state      : $STATE"        >&2
+    echo "identity   : $IDENTITY"     >&2
+    echo "item       : $ITEMNAME ($ITEMTYPE)"  >&2
+    echo "reqId      : $REQID"        >&2
+    echo "removeDate : $REMOVE_DATE"  >&2
+    echo "comment    : $COMMENT"      >&2
+    echo "-- card --" >&2
+    echo "$CARD" | jq . >&2 2>/dev/null || echo "$CARD" >&2
+    echo "-- end event --" >&2
+  fi
 
   curl -sS -X POST "$TEAMS_WEBHOOK" \
     -H "Content-Type: application/json" \
