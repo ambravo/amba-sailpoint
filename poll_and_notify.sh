@@ -99,20 +99,80 @@ while IFS= read -r ITEM; do
   REQTYPE="$(jq -r '.requestType // "?"'                              <<<"$ITEM")"
   STATE="$(jq -r '.accessRequestPhases[-1].state // .state // "?"'    <<<"$ITEM")"
   REQID="$(jq -r '.accessRequestId // .id // "?"'                     <<<"$ITEM")"
-  IDENTITY="$(jq -r '(.requestedFor.name // .requestedFor.id // "?")' <<<"$ITEM")"
+  REQ_NAME="$(jq -r '.name // ""'                                     <<<"$ITEM")"
+  CREATED="$(jq -r '.created // ""'                                   <<<"$ITEM")"
+  REMOVE_DATE="$(jq -r '(.requestedItems[0].removeDate // "")'        <<<"$ITEM")"
+  IDENTITY="$(jq -r '(.requestedFor.name // .requestedFor.id // .requestedFor[0].name // .requestedFor[0].id // "?")' <<<"$ITEM")"
   ITEMNAME="$(jq -r '(.requestedItems[0].name // .requestedItems[0].id // "?")' <<<"$ITEM")"
   ITEMTYPE="$(jq -r '(.requestedItems[0].type // "?")'                <<<"$ITEM")"
+  COMMENT="$(jq -r '(.requestedItems[0].comment // "")'               <<<"$ITEM")"
 
-  TITLE="SailPoint • ${REQTYPE} • ${STATE}"
-  SUBTITLE="${ITEMTYPE}: ${ITEMNAME}"
-  BODY="Identity: ${IDENTITY}"
-  META="Request: ${REQID} | ${MOD}"
+  # --- Human-friendly mappings ----------------------------------------
+  case "$REQTYPE" in
+    GRANT_ACCESS)  ACTION_VERB="granted"   ;;
+    REVOKE_ACCESS) ACTION_VERB="revoked"   ;;
+    *)             ACTION_VERB="$REQTYPE"  ;;
+  esac
 
-  CARD="$(jq -n \
-    --arg t "$TITLE"    \
-    --arg s "$SUBTITLE" \
-    --arg b "$BODY"     \
-    --arg m "$META" '{
+  case "$STATE" in
+    APPROVED|PROVISIONED|EXECUTING|COMPLETED|COMPLETED_SUCCESS|SUCCESS)
+      EMOJI="🟢"; STYLE="good";     STATE_LABEL="Approved" ;;
+    REJECTED|CANCELLED|DENIED|FAILED|COMPLETED_ERROR|ERROR)
+      EMOJI="🔴"; STYLE="attention";STATE_LABEL="Rejected" ;;
+    PENDING|WAITING|NOT_STARTED)
+      EMOJI="⏳"; STYLE="warning";  STATE_LABEL="Pending"  ;;
+    *)
+      EMOJI="⚪"; STYLE="default";  STATE_LABEL="$STATE"   ;;
+  esac
+
+  case "$ITEMTYPE" in
+    ACCESS_PROFILE) ITEMTYPE_LABEL="Access Profile" ;;
+    ROLE)           ITEMTYPE_LABEL="Role"           ;;
+    ENTITLEMENT)    ITEMTYPE_LABEL="Entitlement"    ;;
+    *)              ITEMTYPE_LABEL="$ITEMTYPE"      ;;
+  esac
+
+  # ISO -> "2026-04-23 18:42 UTC"
+  fmt_ts() {
+    [[ -z "$1" ]] && { echo ""; return; }
+    echo "$1" | awk -F'[T:.]' '{printf "%s %s:%s UTC", $1, $2, $3}'
+  }
+  NICE_MOD="$(fmt_ts "$MOD")"
+  NICE_CREATED="$(fmt_ts "$CREATED")"
+  NICE_REMOVE="$(fmt_ts "$REMOVE_DATE")"
+  SHORT_REQID="${REQID:0:12}..."
+
+  TITLE="${EMOJI} ${ITEMTYPE_LABEL} ${ACTION_VERB} — ${STATE_LABEL}"
+  HEADLINE="**${ITEMNAME}** → ${IDENTITY}"
+
+  # Build FactSet facts conditionally (skip empty).
+  FACTS="$(jq -nc \
+    --arg reqtype "${REQTYPE}"        \
+    --arg state   "${STATE_LABEL}"    \
+    --arg who     "${IDENTITY}"       \
+    --arg what    "${ITEMNAME} (${ITEMTYPE_LABEL})" \
+    --arg req     "${NICE_CREATED:-$NICE_MOD}"      \
+    --arg until   "${NICE_REMOVE}"    \
+    --arg id      "${SHORT_REQID}"    \
+    --arg reqname "${REQ_NAME}"       '
+    [
+      { title: "Type",         value: $reqtype },
+      { title: "State",        value: $state },
+      { title: "Identity",     value: $who },
+      { title: "Access Item",  value: $what }
+    ]
+    + (if $reqname != ""    then [ { title: "Request Name", value: $reqname } ] else [] end)
+    + (if $req != ""        then [ { title: "Requested",    value: $req     } ] else [] end)
+    + (if $until != ""      then [ { title: "Valid Until",  value: $until   } ] else [] end)
+    + [ { title: "Request ID", value: $id } ]
+  ')"
+
+  CARD="$(jq -nc \
+    --arg title    "$TITLE"    \
+    --arg headline "$HEADLINE" \
+    --arg style    "$STYLE"    \
+    --arg comment  "$COMMENT"  \
+    --argjson facts "$FACTS" '{
       type: "message",
       attachments: [{
         contentType: "application/vnd.microsoft.card.adaptive",
@@ -120,12 +180,26 @@ while IFS= read -r ITEM; do
           "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
           type: "AdaptiveCard",
           version: "1.4",
-          body: [
-            { type: "TextBlock", size: "Medium", weight: "Bolder", text: $t },
-            { type: "TextBlock", text: $s, wrap: true },
-            { type: "TextBlock", text: $b, wrap: true, isSubtle: true },
-            { type: "TextBlock", text: $m, wrap: true, isSubtle: true, spacing: "Small" }
-          ]
+          body: ([
+            {
+              type: "Container",
+              style: $style,
+              items: [
+                { type: "TextBlock", size: "Large",  weight: "Bolder", text: $title, wrap: true },
+                { type: "TextBlock", size: "Medium", text: $headline, wrap: true }
+              ]
+            },
+            { type: "FactSet", facts: $facts }
+          ] + (if $comment != "" then [
+            {
+              type: "Container",
+              spacing: "Medium",
+              items: [
+                { type: "TextBlock", text: "_Justification_", isSubtle: true, weight: "Bolder", size: "Small" },
+                { type: "TextBlock", text: $comment, wrap: true }
+              ]
+            }
+          ] else [] end))
         }
       }]
     }')"
