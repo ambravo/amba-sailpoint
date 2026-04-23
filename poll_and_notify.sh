@@ -16,6 +16,10 @@
 #   SAILPOINT_TENANT_API
 #   SAILPOINT_CLIENT_ID       (PAT id or regular OAuth client id)
 #   SAILPOINT_CLIENT_SECRET   (PAT secret or client secret)
+#   SAILPOINT_IDENTITY_ID     (the identity whose access-requests to watch;
+#                              the /v2025/access-request-status endpoint
+#                              is per-identity, not global. "me" also works
+#                              if the PAT belongs to that identity.)
 #   TEAMS_WEBHOOK             (Power Automate Workflows URL)
 
 set -euo pipefail
@@ -31,6 +35,7 @@ fi
 : "${SAILPOINT_TENANT_API:?}"
 : "${SAILPOINT_CLIENT_ID:?}"
 : "${SAILPOINT_CLIENT_SECRET:?}"
+: "${SAILPOINT_IDENTITY_ID:?}"
 : "${TEAMS_WEBHOOK:?}"
 
 STATE_FILE="${STATE_FILE:-$SCRIPT_DIR/.poll_state}"
@@ -57,6 +62,7 @@ TOKEN="$(curl -sS -X POST "${SAILPOINT_TENANT_API}/oauth/token" \
 # 2. Fetch latest access-request-status entries (newest first)
 # ---------------------------------------------------------------------
 RESP="$(curl -sS -G "${SAILPOINT_TENANT_API}/v2025/access-request-status" \
+    --data-urlencode "requested-for=${SAILPOINT_IDENTITY_ID}" \
     --data-urlencode "sorters=-modified" \
     --data-urlencode "limit=50" \
     -H "Authorization: Bearer ${TOKEN}" \
