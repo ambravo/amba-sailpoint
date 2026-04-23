@@ -187,6 +187,8 @@ FORM ask_and_submit_request USING iv_identity_id TYPE string
     INTO DATE lv_today TIME lv_time.
   lv_end = lv_today + 30.
 
+  " Use only basis-namespace DDIC refs (BAPIRET2, SYST) so the popup
+  " works on barebones demo tenants without FI tables (BKPF etc).
   CLEAR ls_field.
   ls_field-tabname   = 'BAPIRET2'.
   ls_field-fieldname = 'MESSAGE'.
@@ -196,18 +198,15 @@ FORM ask_and_submit_request USING iv_identity_id TYPE string
   APPEND ls_field TO lt_fields.
 
   CLEAR ls_field.
-  ls_field-tabname   = 'BKPF'.
-  ls_field-fieldname = 'BUDAT'.
+  ls_field-tabname   = 'SYST'.
+  ls_field-fieldname = 'DATUM'.
   ls_field-fieldtext = 'Data de início'.
   ls_field-value     = lv_today.
   APPEND ls_field TO lt_fields.
 
-  " End date: reuse BKPF-BUDAT (DATS). Earlier we had BKPF-VALUT here
-  " but VALUT does not exist on the BKPF header (it lives on BSEG /
-  " BSAS); POPUP_GET_VALUES then raises ERROR_IN_FIELDS = 1.
   CLEAR ls_field.
-  ls_field-tabname   = 'BKPF'.
-  ls_field-fieldname = 'BUDAT'.
+  ls_field-tabname   = 'SYST'.
+  ls_field-fieldname = 'DATUM'.
   ls_field-fieldtext = 'Data de fim'.
   ls_field-value     = lv_end.
   APPEND ls_field TO lt_fields.
