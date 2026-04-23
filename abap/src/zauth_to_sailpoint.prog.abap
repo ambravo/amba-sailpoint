@@ -584,18 +584,25 @@ FORM submit_request USING    iv_identity_id TYPE string
                              cv_http        TYPE i
                              cv_err         TYPE string.
   DATA: lv_body TYPE string,
-        lv_resp TYPE string.
+        lv_resp TYPE string,
+        lv_cmt  TYPE string.
 
-  " Bare-minimum payload. requestedFor is an ARRAY of identity ids.
-  " comment / removeDate / clientMetadata reintroduced once this works.
-  " iv_comment / iv_start / iv_end_iso intentionally unused for now.
+  " comment is required by the AP config (commentsRequired = true).
+  " iv_start / iv_end_iso still unused; added when removeDate goes back.
+  lv_cmt = iv_comment.
+  REPLACE ALL OCCURRENCES OF '\' IN lv_cmt WITH '\\'.
+  REPLACE ALL OCCURRENCES OF '"' IN lv_cmt WITH '\"'.
+  REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>cr_lf   IN lv_cmt WITH ' '.
+  REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>newline IN lv_cmt WITH ' '.
+
   lv_body =
     |\{| &&
       |"requestedFor":["{ iv_identity_id }"],| &&
       |"requestType":"GRANT_ACCESS",| &&
       |"requestedItems":[\{| &&
         |"type":"ACCESS_PROFILE",| &&
-        |"id":"{ iv_ap_id }"| &&
+        |"id":"{ iv_ap_id }",| &&
+        |"comment":"{ lv_cmt }"| &&
       |\}]| &&
     |\}|.
 
