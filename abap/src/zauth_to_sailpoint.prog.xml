@@ -25,34 +25,46 @@
      <LENGTH>37</LENGTH>
     </item>
     <item>
-     <ID>S</ID>
-     <KEY>P_BUKRS</KEY>
+     <ID>I</ID>
+     <KEY>T02</KEY>
+     <ENTRY>Identidade SailPoint</ENTRY>
+     <LENGTH>20</LENGTH>
+    </item>
+    <item>
+     <ID>I</ID>
+     <KEY>S01</KEY>
      <ENTRY>Empresa</ENTRY>
      <LENGTH>7</LENGTH>
     </item>
     <item>
-     <ID>S</ID>
-     <KEY>P_LIFNR</KEY>
+     <ID>I</ID>
+     <KEY>S02</KEY>
      <ENTRY>Fornecedor</ENTRY>
      <LENGTH>10</LENGTH>
     </item>
     <item>
-     <ID>S</ID>
-     <KEY>P_XBLNR</KEY>
+     <ID>I</ID>
+     <KEY>S03</KEY>
      <ENTRY>Referência</ENTRY>
      <LENGTH>10</LENGTH>
     </item>
     <item>
-     <ID>S</ID>
-     <KEY>P_WRBTR</KEY>
+     <ID>I</ID>
+     <KEY>S04</KEY>
      <ENTRY>Valor</ENTRY>
      <LENGTH>5</LENGTH>
     </item>
     <item>
-     <ID>S</ID>
-     <KEY>P_WAERS</KEY>
+     <ID>I</ID>
+     <KEY>S05</KEY>
      <ENTRY>Moeda</ENTRY>
      <LENGTH>5</LENGTH>
+    </item>
+    <item>
+     <ID>I</ID>
+     <KEY>S06</KEY>
+     <ENTRY>Utilizador SailPoint</ENTRY>
+     <LENGTH>20</LENGTH>
     </item>
    </TPOOL>
   </asx:values>
