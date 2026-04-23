@@ -1,30 +1,23 @@
 *&---------------------------------------------------------------------*
 *& Report  ZAUTH_TO_SAILPOINT
-*& Demo: mini vendor-invoice transaction. On AUTHORITY-CHECK failure,
-*&       dialog flow pivots to a SailPoint access request instead of
-*&       dying with a short dump / error message.
+*& Demo: mini vendor-invoice screen. On AUTHORITY-CHECK failure the
+*&       user is offered (popup) to auto-request access via SailPoint
+*&       ISC instead of dying with an error message.
 *&
-*& Screen flow:
-*&   0100  Invoice entry        (mimics FB60 header)
-*&     --> POST pressed, AUTHORITY-CHECK on F_BKPF_BUK
-*&           sy-subrc = 0  -> leave to list, "posted" message
-*&           sy-subrc <> 0 -> LEAVE TO SCREEN 0200
-*&   0200  Access denied dialog (shows error + "Request access" button)
-*&     --> REQ pressed -> call OAuth + POST /v3/access-requests
-*&                        LEAVE TO SCREEN 0300
-*&     --> CAN pressed -> LEAVE PROGRAM
-*&   0300  Confirmation         (shows SailPoint request id + HTTP code)
-*&     --> BACK -> LEAVE PROGRAM
-*&
-*& NOTE: the three dynpros (0100/0200/0300) and their GUI statuses
-*&       (STATUS_0100 / STATUS_0200 / STATUS_0300) must be created in
-*&       SE51 / SE80 inside the report. Field list + PF-STATUS hints
-*&       are documented below each MODULE.
+*& Flow (no dynpros painted - selection screen + popup FMs only):
+*&   1. Selection screen: BUKRS / LIFNR / XBLNR / WRBTR / WAERS
+*&   2. F8 Execute -> START-OF-SELECTION
+*&         AUTHORITY-CHECK F_BKPF_BUK / BUKRS / ACTVT=01
+*&         pass -> MESSAGE 'S' (invoice posted)
+*&         fail -> POPUP_TO_CONFIRM "Request access via SailPoint?"
+*&                   yes -> OAuth + POST /v3/access-requests
+*&                          POPUP_TO_INFORM (request id or error)
+*&                   no  -> LEAVE PROGRAM
 *&---------------------------------------------------------------------*
 REPORT zauth_to_sailpoint.
 
 *----------------------------------------------------------------------*
-* Constants (in prod: read from a custom config table or STRUST/SSF)
+* Constants (in prod: read from a config table or STRUST/SSF)
 *----------------------------------------------------------------------*
 CONSTANTS:
   c_tenant_api  TYPE string VALUE 'https://company21824-poc.api.identitynow-demo.com',
@@ -34,150 +27,108 @@ CONSTANTS:
   c_ap_id       TYPE string VALUE '2c9180857bbbbbbbbbbbbbbbbbbbbbbb'.
 
 *----------------------------------------------------------------------*
-* Screen fields (declared so the dynpro painter can bind to them)
+* Selection screen: FB60 header lookalike
 *----------------------------------------------------------------------*
-DATA:
-  gv_bukrs    TYPE bukrs  VALUE '1000',     " company code (screen 0100)
-  gv_lifnr    TYPE lifnr  VALUE '0000100001',
-  gv_wrbtr    TYPE wrbtr  VALUE '1250.00',
-  gv_waers    TYPE waers  VALUE 'EUR',
-  gv_xblnr    TYPE xblnr  VALUE 'INV-2026-0423',
-  gv_errtxt   TYPE string,                  " screen 0200 error line
-  gv_reqid    TYPE string,                  " screen 0300 request id
-  gv_http     TYPE i,                       " screen 0300 http status
-  gv_token    TYPE string,
-  gv_ok_code  TYPE sy-ucomm,
-  gv_save_ok  TYPE sy-ucomm.
+SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-t01.
+  PARAMETERS:
+    p_bukrs TYPE bukrs DEFAULT '1000'         OBLIGATORY,
+    p_lifnr TYPE lifnr DEFAULT '0000100001'   OBLIGATORY,
+    p_xblnr TYPE xblnr DEFAULT 'INV-2026-0423',
+    p_wrbtr TYPE wrbtr DEFAULT '1250.00',
+    p_waers TYPE waers DEFAULT 'EUR'.
+SELECTION-SCREEN END OF BLOCK b1.
+
+DATA: gv_token TYPE string,
+      gv_reqid TYPE string,
+      gv_http  TYPE i.
 
 *----------------------------------------------------------------------*
 START-OF-SELECTION.
-  CALL SCREEN 0100.
 
-*======================================================================*
-*  SCREEN 0100 - "Enter Vendor Invoice" (FB60 lookalike)
-*
-*  Dynpro fields to paint in SE51:
-*     GV_BUKRS   Company Code   (input)
-*     GV_LIFNR   Vendor         (input)
-*     GV_XBLNR   Reference      (input)
-*     GV_WRBTR   Amount         (input)
-*     GV_WAERS   Currency       (input)
-*     GV_OK_CODE OK code        (hidden)
-*
-*  GUI status STATUS_0100 needs fcodes:
-*     POST  (F8)   -> post the invoice (will trigger AUTHORITY-CHECK)
-*     CANC  (F12)  -> leave program
-*
-*  Flow logic (paste in SE51 "Flow logic" tab):
-*     PROCESS BEFORE OUTPUT.
-*       MODULE status_0100.
-*     PROCESS AFTER INPUT.
-*       MODULE user_command_0100.
-*======================================================================*
-MODULE status_0100 OUTPUT.
-  SET PF-STATUS 'STATUS_0100'.
-  SET TITLEBAR  'TITLE_0100'.
-ENDMODULE.
+  AUTHORITY-CHECK OBJECT 'F_BKPF_BUK'
+    ID 'BUKRS' FIELD p_bukrs
+    ID 'ACTVT' FIELD '01'.
 
-MODULE user_command_0100 INPUT.
-  gv_save_ok = gv_ok_code.
-  CLEAR gv_ok_code.
+  IF sy-subrc = 0.
+    MESSAGE |Invoice { p_xblnr } posted in BUKRS { p_bukrs } | &&
+            |(vendor { p_lifnr }, { p_wrbtr } { p_waers })|
+            TYPE 'S'.
+    RETURN.
+  ENDIF.
 
-  CASE gv_save_ok.
-    WHEN 'CANC' OR 'BACK' OR 'EXIT'.
-      LEAVE PROGRAM.
+  PERFORM offer_sailpoint_request.
 
-    WHEN 'POST'.
-      " This is where a real FB60 would hit the auth object.
-      AUTHORITY-CHECK OBJECT 'F_BKPF_BUK'
-        ID 'BUKRS' FIELD gv_bukrs
-        ID 'ACTVT' FIELD '01'.
+*&---------------------------------------------------------------------*
+FORM offer_sailpoint_request.
+  DATA: lv_answer   TYPE c LENGTH 1,
+        lv_question TYPE string,
+        lv_l1       TYPE char70,
+        lv_l2       TYPE char70,
+        lv_l3       TYPE char70,
+        lv_l4       TYPE char70.
 
-      IF sy-subrc = 0.
-        MESSAGE |Invoice { gv_xblnr } posted in BUKRS { gv_bukrs }| TYPE 'S'.
-        LEAVE PROGRAM.
-      ENDIF.
+  lv_question = |No authorization for company code { p_bukrs } | &&
+                |(auth object F_BKPF_BUK, activity 01).| &&
+                | Request access via SailPoint ISC?|.
 
-      " Auth failed -> pivot to SailPoint flow.
-      gv_errtxt = |No authorization for company code { gv_bukrs } | &&
-                  |(auth object F_BKPF_BUK, activity 01).|.
-      LEAVE TO SCREEN 0200.
-  ENDCASE.
-ENDMODULE.
+  CALL FUNCTION 'POPUP_TO_CONFIRM'
+    EXPORTING
+      titlebar              = 'SAP - Access Denied'
+      text_question         = lv_question
+      text_button_1         = 'Request'
+      icon_button_1         = 'ICON_OKAY'
+      text_button_2         = 'Cancel'
+      icon_button_2         = 'ICON_CANCEL'
+      default_button        = '1'
+      display_cancel_button = ' '
+    IMPORTING
+      answer                = lv_answer
+    EXCEPTIONS
+      text_not_found        = 1
+      OTHERS                = 2.
 
-*======================================================================*
-*  SCREEN 0200 - "Access denied - request via SailPoint?"
-*
-*  Dynpro fields:
-*     GV_ERRTXT  Error message (output only, multi-line text)
-*     GV_BUKRS   Company code  (output only)
-*     GV_OK_CODE OK code       (hidden)
-*
-*  GUI status STATUS_0200 fcodes:
-*     REQ   (Enter)  -> submit SailPoint request
-*     CAN   (F12)    -> cancel / leave program
-*
-*  Flow logic:
-*     PROCESS BEFORE OUTPUT.
-*       MODULE status_0200.
-*     PROCESS AFTER INPUT.
-*       MODULE user_command_0200.
-*======================================================================*
-MODULE status_0200 OUTPUT.
-  SET PF-STATUS 'STATUS_0200'.
-  SET TITLEBAR  'TITLE_0200'.
-ENDMODULE.
+  IF sy-subrc <> 0 OR lv_answer <> '1'.
+    RETURN.
+  ENDIF.
 
-MODULE user_command_0200 INPUT.
-  gv_save_ok = gv_ok_code.
-  CLEAR gv_ok_code.
+  PERFORM get_oauth_token CHANGING gv_token.
+  IF gv_token IS INITIAL.
+    lv_l1 = 'OAuth to SailPoint failed.'.
+    lv_l2 = 'Check client_id / client_secret / tenant URL.'.
+    CALL FUNCTION 'POPUP_TO_INFORM'
+      EXPORTING titel = 'SailPoint'
+                txt1  = lv_l1
+                txt2  = lv_l2.
+    RETURN.
+  ENDIF.
 
-  CASE gv_save_ok.
-    WHEN 'CAN' OR 'BACK' OR 'EXIT'.
-      LEAVE PROGRAM.
+  PERFORM submit_request USING    gv_token
+                         CHANGING gv_reqid gv_http.
 
-    WHEN 'REQ'.
-      PERFORM get_oauth_token  CHANGING gv_token.
-      IF gv_token IS INITIAL.
-        MESSAGE 'OAuth to SailPoint failed - see SM21/ST22' TYPE 'E'.
-      ENDIF.
+  IF gv_http = 200 OR gv_http = 201 OR gv_http = 202.
+    lv_l1 = |SailPoint accepted the request (HTTP { gv_http }).|.
+    lv_l2 = |Request ID: { gv_reqid }|.
+    lv_l3 = |Identity:   { c_identity_id }|.
+    lv_l4 = |Access prof: { c_ap_id }|.
+  ELSEIF gv_http = 429.
+    lv_l1 = 'SailPoint rate limit hit (HTTP 429).'.
+    lv_l2 = 'Retry-After header carries back-off hint.'.
+    lv_l3 = 'Volume anomaly may trigger SailPoint workflow.'.
+    lv_l4 = ''.
+  ELSE.
+    lv_l1 = |SailPoint rejected the request (HTTP { gv_http }).|.
+    lv_l2 = 'See SM21 / ST22 for full response body.'.
+    lv_l3 = ''.
+    lv_l4 = ''.
+  ENDIF.
 
-      PERFORM submit_request   USING    gv_token
-                               CHANGING gv_reqid gv_http.
-      LEAVE TO SCREEN 0300.
-  ENDCASE.
-ENDMODULE.
-
-*======================================================================*
-*  SCREEN 0300 - "Access request submitted"
-*
-*  Dynpro fields:
-*     GV_HTTP    HTTP status (output)
-*     GV_REQID   SailPoint request id (output)
-*     GV_OK_CODE OK code (hidden)
-*
-*  GUI status STATUS_0300 fcodes:
-*     BACK (F3) / EXIT (Shift+F3) -> leave program
-*
-*  Flow logic:
-*     PROCESS BEFORE OUTPUT.
-*       MODULE status_0300.
-*     PROCESS AFTER INPUT.
-*       MODULE user_command_0300.
-*======================================================================*
-MODULE status_0300 OUTPUT.
-  SET PF-STATUS 'STATUS_0300'.
-  SET TITLEBAR  'TITLE_0300'.
-ENDMODULE.
-
-MODULE user_command_0300 INPUT.
-  gv_save_ok = gv_ok_code.
-  CLEAR gv_ok_code.
-  CASE gv_save_ok.
-    WHEN OTHERS.
-      LEAVE PROGRAM.
-  ENDCASE.
-ENDMODULE.
+  CALL FUNCTION 'POPUP_TO_INFORM'
+    EXPORTING titel = 'SailPoint ISC'
+              txt1  = lv_l1
+              txt2  = lv_l2
+              txt3  = lv_l3
+              txt4  = lv_l4.
+ENDFORM.
 
 *======================================================================*
 *  SailPoint ISC helpers
