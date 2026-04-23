@@ -47,10 +47,10 @@
 *& Authorization header is set manually anywhere in this report.
 *&
 *& Endpoints hit:
-*&   /v3/search             identities lookup, accessprofiles lookup,
-*&                          identity-has-access check
-*&                          (search hasn't been moved to a dated path)
-*&   /v2026/access-requests submit GRANT_ACCESS request
+*&   /v3/search                identity lookup, identity-has-access
+*&                             check (search isn't versioned per-path)
+*&   /v2026/access-profiles    GET ?filters=name eq "..." -> AP id
+*&   /v2026/access-requests    POST GRANT_ACCESS request
 *&
 *& Technical keywords in EN, user-facing text in PT. Access profile
 *& lives in SailPoint as "Accounts Payable"; the popups call it by
@@ -387,18 +387,20 @@ ENDFORM.
 FORM resolve_access_profile USING    iv_ap_name TYPE string
                             CHANGING cv_ap_id   TYPE string
                                      cv_err     TYPE string.
-  DATA: lv_body TYPE string,
-        lv_resp TYPE string,
-        lv_code TYPE i.
+  DATA: lv_filter TYPE string,
+        lv_path   TYPE string,
+        lv_resp   TYPE string,
+        lv_code   TYPE i.
 
-  lv_body =
-    |\{| &&
-      |"indices":["accessprofiles"],| &&
-      |"query":\{"query":"name.exact:\\"{ iv_ap_name }\\""\}| &&
-    |\}|.
+  " filters=name eq "Accounts Payable"  with the value URL-encoded
+  lv_filter = |name eq "{ iv_ap_name }"|.
+  REPLACE ALL OCCURRENCES OF ` ` IN lv_filter WITH '%20'.
+  REPLACE ALL OCCURRENCES OF '"' IN lv_filter WITH '%22'.
 
-  PERFORM http_exchange USING    '/v3/search' 'POST'
-                                 'application/json' lv_body
+  lv_path = |/v2026/access-profiles?filters={ lv_filter }&limit=1|.
+
+  PERFORM http_exchange USING    lv_path 'GET'
+                                 'application/json' ''
                         CHANGING lv_code lv_resp cv_err.
 
   IF lv_code <> 200.
