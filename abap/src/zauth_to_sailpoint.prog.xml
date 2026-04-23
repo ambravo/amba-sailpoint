@@ -26,12 +26,6 @@
     </item>
     <item>
      <ID>I</ID>
-     <KEY>T02</KEY>
-     <ENTRY>Identidade SailPoint</ENTRY>
-     <LENGTH>20</LENGTH>
-    </item>
-    <item>
-     <ID>I</ID>
      <KEY>S01</KEY>
      <ENTRY>Empresa</ENTRY>
      <LENGTH>7</LENGTH>
@@ -59,12 +53,6 @@
      <KEY>S05</KEY>
      <ENTRY>Moeda</ENTRY>
      <LENGTH>5</LENGTH>
-    </item>
-    <item>
-     <ID>I</ID>
-     <KEY>S06</KEY>
-     <ENTRY>Utilizador SailPoint</ENTRY>
-     <LENGTH>20</LENGTH>
     </item>
    </TPOOL>
   </asx:values>

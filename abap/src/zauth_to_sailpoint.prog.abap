@@ -47,11 +47,14 @@
 *& Authorization header is set manually anywhere in this report.
 *&
 *& Endpoints hit:
-*&   /v3/search                identity lookup, identity-has-access
-*&                             check (search isn't versioned per-path)
+*&   /v3/search                identity-has-access check (search
+*&                             isn't versioned per-path)
 *&   /v2026/access-profiles    GET full list (limit=250, sorted by
 *&                             name); user picks one in a popup
 *&   /v2026/access-requests    POST GRANT_ACCESS for the picked AP
+*&
+*& Auth: PAT. Owner is implicit -> c_identity_id constant goes into
+*& "requestedFor". No identity lookup needed.
 *&
 *& Technical keywords in EN, user-facing text in PT. The access
 *& profile to request is chosen at runtime from the popup list.
@@ -62,8 +65,11 @@ REPORT zauth_to_sailpoint.
 * Constants - only the SM59 dest name and AP name live in code.
 *----------------------------------------------------------------------*
 CONSTANTS:
-  c_rfc_dest  TYPE rfcdest  VALUE 'ZSAILPOINT',
-  c_tz_madrid TYPE timezone VALUE 'CET'.
+  c_rfc_dest    TYPE rfcdest  VALUE 'ZSAILPOINT',
+  c_tz_madrid   TYPE timezone VALUE 'CET',
+  " PAT owner = the identity that created the PAT in tx for SailPoint
+  " Admin > API Management > PATs. Access is requested for that user.
+  c_identity_id TYPE string   VALUE '<<PASTE_PAT_OWNER_IDENTITY_ID>>'.
 
 TYPES: BEGIN OF ty_ap,
          id   TYPE c LENGTH 32,
@@ -96,35 +102,16 @@ SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-t01.
   SELECTION-SCREEN END OF LINE.
 SELECTION-SCREEN END OF BLOCK b1.
 
-SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE TEXT-t02.
-  SELECTION-SCREEN BEGIN OF LINE.
-    SELECTION-SCREEN COMMENT 1(25) TEXT-s06 FOR FIELD p_spuser.
-    PARAMETERS p_spuser TYPE char50 DEFAULT 'maria.gonzalez' OBLIGATORY.
-  SELECTION-SCREEN END OF LINE.
-SELECTION-SCREEN END OF BLOCK b2.
-
 *----------------------------------------------------------------------*
-DATA: gv_identity_id TYPE string,
-      gv_id_display  TYPE string,
-      gv_ap_id       TYPE string,
-      gv_ap_label    TYPE string,
-      gv_has_access  TYPE abap_bool,
-      gv_reqid       TYPE string,
-      gv_http        TYPE i,
-      gv_err         TYPE string.
+DATA: gv_ap_id      TYPE string,
+      gv_ap_label   TYPE string,
+      gv_has_access TYPE abap_bool,
+      gv_reqid      TYPE string,
+      gv_http       TYPE i,
+      gv_err        TYPE string.
 
 *----------------------------------------------------------------------*
 START-OF-SELECTION.
-
-  PERFORM resolve_identity USING    p_spuser
-                           CHANGING gv_identity_id
-                                    gv_id_display
-                                    gv_err.
-  IF gv_identity_id IS INITIAL.
-    PERFORM inform_err
-      USING |Identidade SailPoint '{ p_spuser }' não encontrada.| gv_err.
-    RETURN.
-  ENDIF.
 
   PERFORM list_and_pick_access_profile CHANGING gv_ap_id
                                                 gv_ap_label
@@ -138,7 +125,7 @@ START-OF-SELECTION.
     RETURN.
   ENDIF.
 
-  PERFORM check_identity_has_access USING    gv_identity_id
+  PERFORM check_identity_has_access USING    c_identity_id
                                              gv_ap_id
                                     CHANGING gv_has_access
                                              gv_err.
@@ -151,7 +138,7 @@ START-OF-SELECTION.
     RETURN.
   ENDIF.
 
-  PERFORM ask_and_submit_request USING gv_identity_id gv_ap_id gv_ap_label.
+  PERFORM ask_and_submit_request USING c_identity_id gv_ap_id gv_ap_label.
 
 *&---------------------------------------------------------------------*
 FORM ask_and_submit_request USING iv_identity_id TYPE string
@@ -237,7 +224,7 @@ FORM ask_and_submit_request USING iv_identity_id TYPE string
   IF gv_http = 200 OR gv_http = 201 OR gv_http = 202.
     lv_t1 = |Pedido aceite (HTTP { gv_http }).|.
     lv_t2 = |ID do pedido: { gv_reqid }|.
-    lv_t3 = |Identidade: { gv_id_display }|.
+    lv_t3 = |Identidade: { c_identity_id }|.
     lv_t4 = |Válido até: { lv_end_iso }|.
   ELSEIF gv_http = 429.
     lv_t1 = 'Limite de pedidos excedido (HTTP 429).'.
@@ -359,39 +346,6 @@ ENDFORM.
 *======================================================================*
 *  SailPoint ISC helpers
 *======================================================================*
-FORM resolve_identity USING    iv_user    TYPE string
-                      CHANGING cv_id      TYPE string
-                               cv_display TYPE string
-                               cv_err     TYPE string.
-  DATA: lv_body TYPE string,
-        lv_resp TYPE string,
-        lv_code TYPE i,
-        lv_q    TYPE string.
-
-  lv_q    = |name:"{ iv_user }" OR alias:"{ iv_user }" OR email:"{ iv_user }"|.
-  lv_body =
-    |\{| &&
-      |"indices":["identities"],| &&
-      |"query":\{"query":"{ lv_q }"\},| &&
-      |"sort":["-_score"]| &&
-    |\}|.
-
-  PERFORM http_exchange USING    '/v3/search' 'POST'
-                                 'application/json' lv_body
-                        CHANGING lv_code lv_resp cv_err.
-
-  IF lv_code <> 200.
-    IF cv_err IS INITIAL.
-      cv_err = |HTTP { lv_code }: { lv_resp }|.
-    ENDIF.
-    CLEAR cv_id.
-    RETURN.
-  ENDIF.
-
-  FIND REGEX '"id"\s*:\s*"([^"]+)"'          IN lv_resp SUBMATCHES cv_id.
-  FIND REGEX '"displayName"\s*:\s*"([^"]*)"' IN lv_resp SUBMATCHES cv_display.
-ENDFORM.
-
 FORM list_and_pick_access_profile
   CHANGING cv_ap_id    TYPE string
            cv_ap_label TYPE string
