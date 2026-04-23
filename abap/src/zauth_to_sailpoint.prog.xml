@@ -15,44 +15,44 @@
    <TPOOL>
     <item>
      <ID>R</ID>
-     <ENTRY>SAP-SailPoint demo: auth failure triggers access request</ENTRY>
-     <LENGTH>56</LENGTH>
+     <ENTRY>Demo SAP-SailPoint: verificar acesso e pedir se necessário</ENTRY>
+     <LENGTH>58</LENGTH>
     </item>
     <item>
      <ID>I</ID>
      <KEY>T01</KEY>
-     <ENTRY>Vendor invoice (FB60 header)</ENTRY>
-     <LENGTH>28</LENGTH>
+     <ENTRY>Fatura de fornecedor (cabeçalho FB60)</ENTRY>
+     <LENGTH>37</LENGTH>
     </item>
     <item>
      <ID>S</ID>
      <KEY>P_BUKRS</KEY>
-     <ENTRY>Company code</ENTRY>
-     <LENGTH>12</LENGTH>
+     <ENTRY>Empresa</ENTRY>
+     <LENGTH>7</LENGTH>
     </item>
     <item>
      <ID>S</ID>
      <KEY>P_LIFNR</KEY>
-     <ENTRY>Vendor</ENTRY>
-     <LENGTH>6</LENGTH>
+     <ENTRY>Fornecedor</ENTRY>
+     <LENGTH>10</LENGTH>
     </item>
     <item>
      <ID>S</ID>
      <KEY>P_XBLNR</KEY>
-     <ENTRY>Reference</ENTRY>
-     <LENGTH>9</LENGTH>
+     <ENTRY>Referência</ENTRY>
+     <LENGTH>10</LENGTH>
     </item>
     <item>
      <ID>S</ID>
      <KEY>P_WRBTR</KEY>
-     <ENTRY>Amount</ENTRY>
-     <LENGTH>6</LENGTH>
+     <ENTRY>Valor</ENTRY>
+     <LENGTH>5</LENGTH>
     </item>
     <item>
      <ID>S</ID>
      <KEY>P_WAERS</KEY>
-     <ENTRY>Currency</ENTRY>
-     <LENGTH>8</LENGTH>
+     <ENTRY>Moeda</ENTRY>
+     <LENGTH>5</LENGTH>
     </item>
    </TPOOL>
   </asx:values>
