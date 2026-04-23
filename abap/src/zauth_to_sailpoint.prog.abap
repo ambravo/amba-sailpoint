@@ -92,7 +92,11 @@ FORM ask_and_submit_request USING iv_token TYPE string.
         lv_time      TYPE t,
         lv_comment   TYPE string,
         lv_start_str TYPE string,
-        lv_end_iso   TYPE string.
+        lv_end_iso   TYPE string,
+        lv_t1        TYPE string,
+        lv_t2        TYPE string,
+        lv_t3        TYPE string,
+        lv_t4        TYPE string.
 
   " Default dates in Madrid timezone (CET / CEST with DST)
   GET TIME STAMP FIELD lv_ts.
@@ -159,23 +163,23 @@ FORM ask_and_submit_request USING iv_token TYPE string.
                          CHANGING gv_reqid gv_http.
 
   IF gv_http = 200 OR gv_http = 201 OR gv_http = 202.
-    PERFORM inform USING 'SailPoint'
-                         |Pedido aceite (HTTP { gv_http }).|
-                         |ID do pedido: { gv_reqid }|
-                         |Identidade: { c_identity_id }|
-                         |Válido até: { lv_end_iso }|.
+    lv_t1 = |Pedido aceite (HTTP { gv_http }).|.
+    lv_t2 = |ID do pedido: { gv_reqid }|.
+    lv_t3 = |Identidade: { c_identity_id }|.
+    lv_t4 = |Válido até: { lv_end_iso }|.
   ELSEIF gv_http = 429.
-    PERFORM inform USING 'SailPoint'
-                         'Limite de pedidos excedido (HTTP 429).'
-                         'Cabeçalho Retry-After indica o back-off.'
-                         'Pode ter disparado workflow de anomalia.'
-                         ''.
+    lv_t1 = 'Limite de pedidos excedido (HTTP 429).'.
+    lv_t2 = 'Cabeçalho Retry-After indica o back-off.'.
+    lv_t3 = 'Pode ter disparado workflow de anomalia.'.
+    lv_t4 = ''.
   ELSE.
-    PERFORM inform USING 'SailPoint'
-                         |Pedido rejeitado (HTTP { gv_http }).|
-                         'Ver SM21 / ST22 para resposta completa.'
-                         '' ''.
+    lv_t1 = |Pedido rejeitado (HTTP { gv_http }).|.
+    lv_t2 = 'Ver SM21 / ST22 para resposta completa.'.
+    lv_t3 = ''.
+    lv_t4 = ''.
   ENDIF.
+
+  PERFORM inform USING 'SailPoint' lv_t1 lv_t2 lv_t3 lv_t4.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
