@@ -41,6 +41,22 @@
 
 set -euo pipefail
 
+# --- Parse args first so env-check logic below can see flags ---
+VERBOSE=0
+DRY_RUN=0
+WINDOW_HOURS=4
+while (( $# )); do
+  case "$1" in
+    -v|--verbose) VERBOSE=1; shift ;;
+    -n|--dry-run) DRY_RUN=1; VERBOSE=1; shift ;;
+    -h|--help)
+      sed -n '1,35p' "$0"; exit 0 ;;
+    *)            WINDOW_HOURS="$1"; shift ;;
+  esac
+done
+
+log_verbose() { (( VERBOSE )) && printf "[verbose] %s\n" "$*" >&2 || true; }
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
   set -a
@@ -61,31 +77,12 @@ fi
 STATE_FILE="${STATE_FILE:-$SCRIPT_DIR/.poll_state}"
 POSTED_FILE="${POSTED_FILE:-$SCRIPT_DIR/.poll_posted}"
 
-# --- Parse args (order-independent) ---
-VERBOSE=0
-DRY_RUN=0
-WINDOW_HOURS=4
-while (( $# )); do
-  case "$1" in
-    -v|--verbose) VERBOSE=1; shift ;;
-    -n|--dry-run) DRY_RUN=1; VERBOSE=1; shift ;;
-    -h|--help)
-      sed -n '1,35p' "$0"; exit 0 ;;
-    *)            WINDOW_HOURS="$1"; shift ;;
-  esac
-done
-
-log_verbose() { (( VERBOSE )) && printf "[verbose] %s\n" "$*" >&2 || true; }
-
-# Load the set of already-posted (requestId|stateLabel) keys so we
-# can skip events we've already notified about, even if their
-# .modified timestamp keeps bumping on each phase transition.
-declare -A POSTED
-if [[ -f "$POSTED_FILE" ]]; then
-  while IFS= read -r k; do
-    [[ -n "$k" ]] && POSTED["$k"]=1
-  done < "$POSTED_FILE"
-fi
+# Dedup set of (requestId|stateLabel) keys. Backed by POSTED_FILE
+# rather than an associative array so we work on macOS's stock
+# bash 3.2 which doesn't support `declare -A`.
+is_posted() {
+  [[ -f "$POSTED_FILE" ]] && grep -Fqx "$1" "$POSTED_FILE" 2>/dev/null
+}
 
 # On first run (no state file), seed "last seen" to now - WINDOW_HOURS.
 if [[ -f "$STATE_FILE" ]]; then
@@ -144,56 +141,83 @@ while IFS= read -r ITEM; do
   # below after we know STATE_LABEL. The pre-STATE_LABEL copy just
   # guards the cheap timestamp check above.
 
-  REQTYPE="$(jq -r '.requestType // "?"'                              <<<"$ITEM")"
-  REQID="$(jq -r '.accessRequestId // .id // "?"'                     <<<"$ITEM")"
-  REQ_NAME="$(jq -r '.name // ""'                                     <<<"$ITEM")"
-  CREATED="$(jq -r '.created // ""'                                   <<<"$ITEM")"
-  REMOVE_DATE="$(jq -r '(.requestedItems[0].removeDate // "")'        <<<"$ITEM")"
-  IDENTITY="$(jq -r '(.requestedFor.name // .requestedFor.id // .requestedFor[0].name // .requestedFor[0].id // "?")' <<<"$ITEM")"
-  ITEMNAME="$(jq -r '(.requestedItems[0].name // .requestedItems[0].id // "?")' <<<"$ITEM")"
-  ITEMTYPE="$(jq -r '(.requestedItems[0].type // "?")'                <<<"$ITEM")"
-  COMMENT="$(jq -r '(.requestedItems[0].comment // "")'               <<<"$ITEM")"
+  # The /v2025/access-request-status endpoint returns ONE row per
+  # item per request (flat, not nested). Paths are top-level.
+  REQTYPE="$(jq -r '.requestType // "?"'                                  <<<"$ITEM")"
+  REQID="$(jq -r   '.accessRequestId // "?"'                              <<<"$ITEM")"
+  ITEMNAME="$(jq -r '.name // "?"'                                        <<<"$ITEM")"
+  ITEMTYPE="$(jq -r '.type // "?"'                                        <<<"$ITEM")"
+  ITEMID="$(jq -r   '.id // "?"'                                          <<<"$ITEM")"
+  CREATED="$(jq -r  '.created // ""'                                      <<<"$ITEM")"
+  REMOVE_DATE="$(jq -r '.removeDate // ""'                                <<<"$ITEM")"
+  IDENTITY="$(jq -r '(.requestedFor.name // .requestedFor.id // "?")'     <<<"$ITEM")"
+  REQUESTER="$(jq -r '(.requester.name // .requester.id // "")'           <<<"$ITEM")"
+  COMMENT="$(jq -r  '.requesterComment.comment // ""'                     <<<"$ITEM")"
 
-  # Overall request lifecycle state (authoritative):
-  #   EXECUTING -> still moving through phases
-  #   COMPLETED -> finished (check phase results to see approved vs rejected)
-  #   CANCELLED/TERMINATED -> stopped
-  EXEC_STATE="$(jq -r '.executionStatus // .state // "?"'             <<<"$ITEM")"
+  # Top-level .state is authoritative.
+  # Observed values: REQUEST_COMPLETED, REJECTED, CANCELLED, ERROR.
+  # Others likely seen in live flows: EXECUTING, APPROVED, TERMINATED.
+  EXEC_STATE="$(jq -r '.state // "?"'                                     <<<"$ITEM")"
 
-  # Any item/phase ended with a rejection?
-  HAS_REJECTED="$(jq -r '[.requestedItems[]?.accessRequestPhases[]?.result] | any(. == "REJECTED")' <<<"$ITEM")"
+  # Phases at the top level.
+  LAST_PHASE_NAME="$(jq -r  '.accessRequestPhases[-1].name   // ""'       <<<"$ITEM")"
+  LAST_PHASE_STATE="$(jq -r '.accessRequestPhases[-1].state  // ""'       <<<"$ITEM")"
+  LAST_PHASE_RESULT="$(jq -r '.accessRequestPhases[-1].result // ""'      <<<"$ITEM")"
 
-  # Name + state of the current (last) phase - tells us if we're in
-  # approval or provisioning while EXECUTING.
-  LAST_PHASE_NAME="$(jq -r  '(.requestedItems[0].accessRequestPhases[-1].name   // "")' <<<"$ITEM")"
-  LAST_PHASE_STATE="$(jq -r '(.requestedItems[0].accessRequestPhases[-1].state  // "")' <<<"$ITEM")"
-  LAST_PHASE_RESULT="$(jq -r '(.requestedItems[0].accessRequestPhases[-1].result // "")' <<<"$ITEM")"
+  # Rejection detected if any approvalDetails.status is REJECTED.
+  HAS_REJECTED_APPROVAL="$(jq -r '[.approvalDetails[]?.status] | any(. == "REJECTED")' <<<"$ITEM")"
+
+  # SOD violation (Separation of Duties). Worth surfacing.
+  SOD_POLICY="$(jq -r '(.sodViolationContext.violationCheckResult.violatedPolicies[0].name // "")' <<<"$ITEM")"
+
+  # Cancellation reason (when state = CANCELLED).
+  CANCEL_COMMENT="$(jq -r '.cancelledRequestDetails.comment // ""' <<<"$ITEM")"
+
+  # Approver comment on a completed approval, if any.
+  APPROVER_COMMENT="$(jq -r '
+    [.approvalDetails[]? | select(.comment != null) | .comment] | .[0] // ""
+  ' <<<"$ITEM")"
+
+  # Aggregated errors.
+  ERROR_MSGS="$(jq -r '[.errorMessages[]?[]?.text] | join(" | ") // ""' <<<"$ITEM")"
 
   # --- Human-friendly mappings ----------------------------------------
   case "$REQTYPE" in
     GRANT_ACCESS)  ACTION_VERB="grant"   ;;
     REVOKE_ACCESS) ACTION_VERB="revoke"  ;;
+    MODIFY_ACCESS) ACTION_VERB="modify"  ;;
     *)             ACTION_VERB="$REQTYPE" ;;
   esac
 
-  # Decide emoji + label from the combination of EXEC_STATE + rejections
-  # + current phase. Prefer "awaiting approval" / "provisioning" over
-  # the generic "in progress" when EXECUTING.
-  if   [[ "$EXEC_STATE" == "CANCELLED" || "$EXEC_STATE" == "TERMINATED" ]]; then
-    EMOJI="⚫"; STYLE="attention"; STATE_LABEL="Cancelled"
-  elif [[ "$HAS_REJECTED" == "true" ]]; then
-    EMOJI="🔴"; STYLE="attention"; STATE_LABEL="Rejected"
-  elif [[ "$EXEC_STATE" == "EXECUTING" ]]; then
-    EMOJI="⏳"; STYLE="warning"
-    case "$LAST_PHASE_NAME" in
-      *APPROVAL*)     STATE_LABEL="Awaiting approval" ;;
-      *PROVISION*)    STATE_LABEL="Provisioning"      ;;
-      *)              STATE_LABEL="In progress"       ;;
-    esac
-  elif [[ "$EXEC_STATE" == "COMPLETED" ]]; then
-    EMOJI="🟢"; STYLE="good";      STATE_LABEL="Approved and provisioned"
-  else
-    EMOJI="⚪"; STYLE="default";   STATE_LABEL="$EXEC_STATE"
+  case "$EXEC_STATE" in
+    REQUEST_COMPLETED|APPROVED_AND_PROVISIONED|PROVISIONED|COMPLETED)
+      EMOJI="🟢"; STYLE="good";      STATE_LABEL="Completed" ;;
+    APPROVED)
+      EMOJI="🟢"; STYLE="good";      STATE_LABEL="Approved" ;;
+    REJECTED)
+      EMOJI="🔴"; STYLE="attention"; STATE_LABEL="Rejected" ;;
+    ERROR|FAILED)
+      EMOJI="🔴"; STYLE="attention"; STATE_LABEL="Error" ;;
+    CANCELLED|TERMINATED)
+      EMOJI="⚫"; STYLE="attention"; STATE_LABEL="Cancelled" ;;
+    EXECUTING)
+      EMOJI="⏳"; STYLE="warning"
+      case "$LAST_PHASE_NAME" in
+        *APPROVAL*)  STATE_LABEL="Awaiting approval" ;;
+        *PROVISION*) STATE_LABEL="Provisioning"      ;;
+        *SOD*)       STATE_LABEL="Policy checks"     ;;
+        *)           STATE_LABEL="In progress"       ;;
+      esac
+      ;;
+    *)
+      EMOJI="⚪"; STYLE="default";   STATE_LABEL="$EXEC_STATE" ;;
+  esac
+
+  # If the approval chain recorded a REJECTED step but top-level state
+  # is ambiguous, upgrade label.
+  if [[ "$HAS_REJECTED_APPROVAL" == "true" && "$STATE_LABEL" != "Rejected" && "$STATE_LABEL" != "Cancelled" ]]; then
+    STATE_LABEL="Rejected by approver"
+    EMOJI="🔴"; STYLE="attention"
   fi
 
   case "$ITEMTYPE" in
@@ -218,12 +242,12 @@ while IFS= read -r ITEM; do
   TITLE="${EMOJI} ${ACTION_TITLE} ${ITEMTYPE_LABEL} • ${STATE_LABEL}"
   HEADLINE="**${ITEMNAME}** → **${IDENTITY}**"
 
-  # Dedup: same (reqId + human state label) means we already told
-  # Teams about this transition - skip. Every real state change flips
-  # STATE_LABEL so we still notify once per transition. Dry-run
-  # bypasses dedup so the operator sees everything.
-  DEDUP_KEY="${REQID}|${STATE_LABEL}"
-  if (( ! DRY_RUN )) && [[ -n "${POSTED[$DEDUP_KEY]:-}" ]]; then
+  # Dedup: same (reqId + itemId + human state label) means we already
+  # told Teams about this transition - skip. Item id is in the key so
+  # two items from the same multi-item request each post separately.
+  # Dry-run bypasses dedup.
+  DEDUP_KEY="${REQID}|${ITEMID}|${STATE_LABEL}"
+  if (( ! DRY_RUN )) && is_posted "$DEDUP_KEY"; then
     log_verbose "skip already-posted: $DEDUP_KEY"
     [[ "$MOD" > "$NEW_LAST" ]] && NEW_LAST="$MOD"
     continue
@@ -233,27 +257,35 @@ while IFS= read -r ITEM; do
   # FactSet variant was rejected by Teams ("cards.unsupported") - this
   # shape is the one the initial working test used.
   BODY_ITEMS="$(jq -nc \
-    --arg title    "$TITLE"    \
-    --arg headline "$HEADLINE" \
-    --arg reqtype  "${REQTYPE}"                                    \
-    --arg state    "${STATE_LABEL}"                                \
-    --arg item     "${ITEMNAME} (${ITEMTYPE_LABEL})"               \
-    --arg req      "${NICE_CREATED:-$NICE_MOD}"                    \
-    --arg until    "${NICE_REMOVE}"                                \
-    --arg id       "${SHORT_REQID}"                                \
-    --arg reqname  "${REQ_NAME}"                                   \
-    --arg comment  "${COMMENT}"                                    '
+    --arg title        "$TITLE"    \
+    --arg headline     "$HEADLINE" \
+    --arg reqtype      "${REQTYPE}"                            \
+    --arg state        "${STATE_LABEL}"                        \
+    --arg item         "${ITEMNAME} (${ITEMTYPE_LABEL})"       \
+    --arg req          "${NICE_CREATED:-$NICE_MOD}"            \
+    --arg until        "${NICE_REMOVE}"                        \
+    --arg id           "${SHORT_REQID}"                        \
+    --arg requester    "${REQUESTER}"                          \
+    --arg comment      "${COMMENT}"                            \
+    --arg cancel_cmt   "${CANCEL_COMMENT}"                     \
+    --arg approver_cmt "${APPROVER_COMMENT}"                   \
+    --arg sod          "${SOD_POLICY}"                         \
+    --arg errs         "${ERROR_MSGS}"                         '
     [ { type: "TextBlock", size: "Large",  weight: "Bolder", text: $title,    wrap: true }
     , { type: "TextBlock", size: "Medium", text: $headline, wrap: true }
     , { type: "TextBlock", text: ("**Type:** "        + $reqtype), wrap: true }
     , { type: "TextBlock", text: ("**State:** "       + $state),   wrap: true }
     , { type: "TextBlock", text: ("**Access item:** " + $item),    wrap: true }
     ]
-    + (if $reqname != "" then [ { type: "TextBlock", text: ("**Request:** "    + $reqname), wrap: true } ] else [] end)
-    + (if $req     != "" then [ { type: "TextBlock", text: ("**Requested:** "  + $req),     wrap: true } ] else [] end)
-    + (if $until   != "" then [ { type: "TextBlock", text: ("**Valid until:** "+ $until),   wrap: true } ] else [] end)
-    +                     [ { type: "TextBlock", text: ("**Request ID:** " + $id),   wrap: true, isSubtle: true } ]
-    + (if $comment != "" then [ { type: "TextBlock", text: ("_Justification:_ " + $comment), wrap: true, isSubtle: true } ] else [] end)
+    + (if $requester != "" and $requester != "Ariel.Bravo" then [ { type: "TextBlock", text: ("**Requested by:** " + $requester), wrap: true } ] else [] end)
+    + (if $req       != "" then [ { type: "TextBlock", text: ("**Requested:** "  + $req),   wrap: true } ] else [] end)
+    + (if $until     != "" then [ { type: "TextBlock", text: ("**Valid until:** "+ $until), wrap: true } ] else [] end)
+    +                       [ { type: "TextBlock", text: ("**Request ID:** " + $id), wrap: true, isSubtle: true } ]
+    + (if $comment      != "" then [ { type: "TextBlock", text: ("_Justification:_ "      + $comment),      wrap: true, isSubtle: true } ] else [] end)
+    + (if $approver_cmt != "" then [ { type: "TextBlock", text: ("_Approver comment:_ "   + $approver_cmt), wrap: true, isSubtle: true } ] else [] end)
+    + (if $cancel_cmt   != "" then [ { type: "TextBlock", text: ("_Cancelled — reason:_ " + $cancel_cmt),   wrap: true, isSubtle: true } ] else [] end)
+    + (if $sod          != "" then [ { type: "TextBlock", text: ("⚠️ _SoD policy:_ "       + $sod),          wrap: true, isSubtle: true } ] else [] end)
+    + (if $errs         != "" then [ { type: "TextBlock", text: ("⚠️ _Error:_ "            + $errs),         wrap: true, isSubtle: true } ] else [] end)
   ')"
 
   CARD="$(jq -nc \
@@ -272,20 +304,26 @@ while IFS= read -r ITEM; do
 
   if (( VERBOSE )); then
     echo "---- event -------------------------------------------------" >&2
-    echo "modified           : $MOD"               >&2
-    echo "requestType        : $REQTYPE"           >&2
-    echo "executionStatus    : $EXEC_STATE"        >&2
-    echo "hasRejected        : $HAS_REJECTED"      >&2
-    echo "lastPhase name     : $LAST_PHASE_NAME"   >&2
-    echo "lastPhase state    : $LAST_PHASE_STATE"  >&2
-    echo "lastPhase result   : $LAST_PHASE_RESULT" >&2
-    echo "-> emoji           : $EMOJI"             >&2
-    echo "-> stateLabel      : $STATE_LABEL"       >&2
-    echo "identity           : $IDENTITY"          >&2
-    echo "item               : $ITEMNAME ($ITEMTYPE)" >&2
-    echo "reqId              : $REQID"             >&2
-    echo "removeDate         : $REMOVE_DATE"       >&2
-    echo "comment            : $COMMENT"           >&2
+    echo "modified            : $MOD"                     >&2
+    echo "requestType         : $REQTYPE"                 >&2
+    echo ".state              : $EXEC_STATE"              >&2
+    echo "hasRejectedApproval : $HAS_REJECTED_APPROVAL"   >&2
+    echo "lastPhase name      : $LAST_PHASE_NAME"         >&2
+    echo "lastPhase state     : $LAST_PHASE_STATE"        >&2
+    echo "lastPhase result    : $LAST_PHASE_RESULT"       >&2
+    echo "-> emoji            : $EMOJI"                   >&2
+    echo "-> stateLabel       : $STATE_LABEL"             >&2
+    echo "identity            : $IDENTITY"                >&2
+    echo "requester           : $REQUESTER"               >&2
+    echo "item                : $ITEMNAME ($ITEMTYPE)"    >&2
+    echo "itemId              : $ITEMID"                  >&2
+    echo "reqId               : $REQID"                   >&2
+    echo "removeDate          : $REMOVE_DATE"             >&2
+    echo "comment             : $COMMENT"                 >&2
+    echo "sodPolicy           : $SOD_POLICY"              >&2
+    echo "cancelComment       : $CANCEL_COMMENT"          >&2
+    echo "approverComment     : $APPROVER_COMMENT"        >&2
+    echo "errorMsgs           : $ERROR_MSGS"              >&2
     echo "-- card --" >&2
     echo "$CARD" | jq . >&2 2>/dev/null || echo "$CARD" >&2
     echo "-- end event --" >&2
@@ -299,9 +337,7 @@ while IFS= read -r ITEM; do
       -d "$CARD" > /dev/null
     echo "Posted: ${REQTYPE} ${STATE_LABEL} ${IDENTITY} / ${ITEMNAME}  [${MOD}]"
 
-    # Record in dedup set and persist immediately so a crash mid-loop
-    # doesn't cause replays.
-    POSTED["$DEDUP_KEY"]=1
+    # Record immediately so a crash mid-loop doesn't cause replays.
     echo "$DEDUP_KEY" >> "$POSTED_FILE"
   fi
 
