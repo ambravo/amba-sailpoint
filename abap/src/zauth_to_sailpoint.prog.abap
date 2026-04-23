@@ -386,17 +386,17 @@ FORM list_and_pick_access_profile
     RETURN.
   ENDIF.
 
-  " field_tab: NAME first (visible width 60), ID second (returned).
-  " Offsets follow ty_ap layout: id at 0 (32), name at 32 (60).
+  " field_tab: F4IF reads OFFSET and INTLEN in BYTES (Unicode = 2/char).
+  " ty_ap layout: id (c 32) = 64 bytes, name (c 60) = 120 bytes.
   CLEAR ls_field.
   ls_field-fieldname = 'NAME'.
   ls_field-langu     = sy-langu.
   ls_field-position  = 1.
-  ls_field-offset    = 32.
-  ls_field-leng      = 60.
-  ls_field-intlen    = 60.
+  ls_field-offset    = 64.       " bytes; after id (32 chars * 2)
+  ls_field-leng      = 60.       " external/output width in chars
+  ls_field-intlen    = 120.      " bytes; 60 chars * 2
   ls_field-inttype   = 'C'.
-  ls_field-outputlen = 40.
+  ls_field-outputlen = 60.
   ls_field-fieldtext = 'Access Profile'.
   APPEND ls_field TO lt_field.
 
@@ -404,9 +404,9 @@ FORM list_and_pick_access_profile
   ls_field-fieldname = 'ID'.
   ls_field-langu     = sy-langu.
   ls_field-position  = 2.
-  ls_field-offset    = 0.
-  ls_field-leng      = 32.
-  ls_field-intlen    = 32.
+  ls_field-offset    = 0.        " bytes
+  ls_field-leng      = 32.       " chars
+  ls_field-intlen    = 64.       " bytes; 32 chars * 2
   ls_field-inttype   = 'C'.
   ls_field-outputlen = 32.
   ls_field-fieldtext = 'GUID'.
