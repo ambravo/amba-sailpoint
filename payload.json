@@ -1,0 +1,17 @@
+{
+  "requestedFor": ["__IDENTITY_ID__"],
+  "requestType": "GRANT_ACCESS",
+  "requestedItems": [
+    {
+      "type": "ACCESS_PROFILE",
+      "id": "__ACCESS_PROFILE_ID__",
+      "comment": "Auto-requested from SAP tx FB60 after AUTHORITY-CHECK failure on F_BKPF_BUK (BUKRS=1000, ACTVT=01)",
+      "clientMetadata": {
+        "sourceSystem": "SAP-PRD",
+        "tcode": "FB60",
+        "authObject": "F_BKPF_BUK",
+        "triggeredBy": "ZAUTH_TO_SAILPOINT"
+      }
+    }
+  ]
+}
