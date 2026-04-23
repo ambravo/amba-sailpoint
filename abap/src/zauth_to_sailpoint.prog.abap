@@ -49,12 +49,12 @@
 *& Endpoints hit:
 *&   /v3/search                identity lookup, identity-has-access
 *&                             check (search isn't versioned per-path)
-*&   /v2026/access-profiles    GET ?filters=name eq "..." -> AP id
-*&   /v2026/access-requests    POST GRANT_ACCESS request
+*&   /v2026/access-profiles    GET full list (limit=250, sorted by
+*&                             name); user picks one in a popup
+*&   /v2026/access-requests    POST GRANT_ACCESS for the picked AP
 *&
-*& Technical keywords in EN, user-facing text in PT. Access profile
-*& lives in SailPoint as "Accounts Payable"; the popups call it by
-*& its PT label "Contas a Pagar".
+*& Technical keywords in EN, user-facing text in PT. The access
+*& profile to request is chosen at runtime from the popup list.
 *&---------------------------------------------------------------------*
 REPORT zauth_to_sailpoint.
 
@@ -63,11 +63,12 @@ REPORT zauth_to_sailpoint.
 *----------------------------------------------------------------------*
 CONSTANTS:
   c_rfc_dest  TYPE rfcdest  VALUE 'ZSAILPOINT',
-  " The access profile is created in SailPoint with the EN name; we
-  " keep a PT label for popups to stay consistent with the rest of UI.
-  c_ap_name   TYPE string   VALUE 'Accounts Payable',
-  c_ap_label  TYPE string   VALUE 'Contas a Pagar',
   c_tz_madrid TYPE timezone VALUE 'CET'.
+
+TYPES: BEGIN OF ty_ap,
+         id   TYPE c LENGTH 32,
+         name TYPE c LENGTH 60,
+       END OF ty_ap.
 
 *----------------------------------------------------------------------*
 * Selection screen - COMMENT + text symbols so PT labels always render
@@ -106,6 +107,7 @@ SELECTION-SCREEN END OF BLOCK b2.
 DATA: gv_identity_id TYPE string,
       gv_id_display  TYPE string,
       gv_ap_id       TYPE string,
+      gv_ap_label    TYPE string,
       gv_has_access  TYPE abap_bool,
       gv_reqid       TYPE string,
       gv_http        TYPE i,
@@ -124,11 +126,15 @@ START-OF-SELECTION.
     RETURN.
   ENDIF.
 
-  PERFORM resolve_access_profile USING    c_ap_name
-                                 CHANGING gv_ap_id gv_err.
+  PERFORM list_and_pick_access_profile CHANGING gv_ap_id
+                                                gv_ap_label
+                                                gv_err.
   IF gv_ap_id IS INITIAL.
-    PERFORM inform_err
-      USING |Access profile '{ c_ap_label }' não encontrado.| gv_err.
+    " Empty id + non-empty err -> failure; otherwise the user just
+    " cancelled the picker -> exit silently.
+    IF gv_err IS NOT INITIAL.
+      PERFORM inform_err USING 'Falha ao listar access profiles.' gv_err.
+    ENDIF.
     RETURN.
   ENDIF.
 
@@ -139,16 +145,18 @@ START-OF-SELECTION.
 
   IF gv_has_access = abap_true.
     MESSAGE |Fatura { p_xblnr } lançada na empresa { p_bukrs } | &&
-            |(fornecedor { p_lifnr }, { p_wrbtr } { p_waers }).|
+            |(fornecedor { p_lifnr }, { p_wrbtr } { p_waers }, | &&
+            |{ gv_ap_label }).|
             TYPE 'S'.
     RETURN.
   ENDIF.
 
-  PERFORM ask_and_submit_request USING gv_identity_id gv_ap_id.
+  PERFORM ask_and_submit_request USING gv_identity_id gv_ap_id gv_ap_label.
 
 *&---------------------------------------------------------------------*
 FORM ask_and_submit_request USING iv_identity_id TYPE string
-                                  iv_ap_id       TYPE string.
+                                  iv_ap_id       TYPE string
+                                  iv_ap_label    TYPE string.
 
   DATA: lt_fields    TYPE TABLE OF sval,
         ls_field     TYPE sval,
@@ -174,7 +182,7 @@ FORM ask_and_submit_request USING iv_identity_id TYPE string
   ls_field-tabname   = 'BAPIRET2'.
   ls_field-fieldname = 'MESSAGE'.
   ls_field-fieldtext = 'Justificação'.
-  ls_field-value     = |Lançamento FB60 - necessário acesso { c_ap_label } | &&
+  ls_field-value     = |Lançamento FB60 - necessário acesso { iv_ap_label } | &&
                        |para empresa { p_bukrs }|.
   APPEND ls_field TO lt_fields.
 
@@ -194,7 +202,7 @@ FORM ask_and_submit_request USING iv_identity_id TYPE string
 
   CALL FUNCTION 'POPUP_GET_VALUES'
     EXPORTING
-      popup_title     = |Pedido de acesso - { c_ap_label }|
+      popup_title     = |Pedido de acesso - { iv_ap_label }|
       start_column    = 10
       start_row       = 5
     IMPORTING
@@ -384,34 +392,67 @@ FORM resolve_identity USING    iv_user    TYPE string
   FIND REGEX '"displayName"\s*:\s*"([^"]*)"' IN lv_resp SUBMATCHES cv_display.
 ENDFORM.
 
-FORM resolve_access_profile USING    iv_ap_name TYPE string
-                            CHANGING cv_ap_id   TYPE string
-                                     cv_err     TYPE string.
-  DATA: lv_filter TYPE string,
-        lv_path   TYPE string,
-        lv_resp   TYPE string,
-        lv_code   TYPE i.
+FORM list_and_pick_access_profile
+  CHANGING cv_ap_id    TYPE string
+           cv_ap_label TYPE string
+           cv_err      TYPE string.
 
-  " filters=name eq "Accounts Payable"  with the value URL-encoded
-  lv_filter = |name eq "{ iv_ap_name }"|.
-  REPLACE ALL OCCURRENCES OF ` ` IN lv_filter WITH '%20'.
-  REPLACE ALL OCCURRENCES OF '"' IN lv_filter WITH '%22'.
+  DATA: lv_resp   TYPE string,
+        lv_code   TYPE i,
+        lt_aps    TYPE STANDARD TABLE OF ty_ap,
+        ls_ap     TYPE ty_ap,
+        lv_choice TYPE i.
 
-  lv_path = |/v2026/access-profiles?filters={ lv_filter }&limit=1|.
+  CLEAR: cv_ap_id, cv_ap_label.
 
-  PERFORM http_exchange USING    lv_path 'GET'
-                                 'application/json' ''
+  PERFORM http_exchange USING    '/v2026/access-profiles?limit=250&sorters=name'
+                                 'GET' 'application/json' ''
                         CHANGING lv_code lv_resp cv_err.
-
   IF lv_code <> 200.
     IF cv_err IS INITIAL.
       cv_err = |HTTP { lv_code }: { lv_resp }|.
     ENDIF.
-    CLEAR cv_ap_id.
     RETURN.
   ENDIF.
 
-  FIND REGEX '"id"\s*:\s*"([^"]+)"' IN lv_resp SUBMATCHES cv_ap_id.
+  TRY.
+      /ui2/cl_json=>deserialize(
+        EXPORTING json        = lv_resp
+                  pretty_name = /ui2/cl_json=>pretty_mode-camel_case
+        CHANGING  data        = lt_aps ).
+    CATCH cx_root INTO DATA(lx).
+      cv_err = |JSON parse failed: { lx->get_text( ) }|.
+      RETURN.
+  ENDTRY.
+
+  IF lt_aps IS INITIAL.
+    cv_err = 'Lista de access profiles vazia.'.
+    RETURN.
+  ENDIF.
+
+  CALL FUNCTION 'POPUP_WITH_TABLE_DISPLAY'
+    EXPORTING
+      endpos_col   = 100
+      endpos_row   = 25
+      startpos_col = 5
+      startpos_row = 5
+      titletext    = 'Selecione access profile'
+    IMPORTING
+      choise       = lv_choice
+    TABLES
+      valuetab     = lt_aps
+    EXCEPTIONS
+      break_off    = 1
+      OTHERS       = 2.
+
+  IF sy-subrc <> 0 OR lv_choice IS INITIAL.
+    " Cancelled - leave cv_ap_id empty, no error.
+    RETURN.
+  ENDIF.
+
+  READ TABLE lt_aps INTO ls_ap INDEX lv_choice.
+  cv_ap_id    = ls_ap-id.
+  cv_ap_label = ls_ap-name.
 ENDFORM.
 
 FORM check_identity_has_access USING    iv_identity_id TYPE string
