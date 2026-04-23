@@ -593,6 +593,26 @@ FORM submit_request USING    iv_identity_id TYPE string
   REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>cr_lf   IN lv_cmt WITH ' '.
   REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>newline IN lv_cmt WITH ' '.
 
+  " ASCII-fold the comment so SailPoint's JSON parser can't blame
+  " UTF-8 multi-byte sequences. Loses Portuguese accents on the wire
+  " (popup label stays PT for the human).
+  REPLACE ALL OCCURRENCES OF 'ç' IN lv_cmt WITH 'c'.
+  REPLACE ALL OCCURRENCES OF 'Ç' IN lv_cmt WITH 'C'.
+  REPLACE ALL OCCURRENCES OF 'ã' IN lv_cmt WITH 'a'.
+  REPLACE ALL OCCURRENCES OF 'á' IN lv_cmt WITH 'a'.
+  REPLACE ALL OCCURRENCES OF 'à' IN lv_cmt WITH 'a'.
+  REPLACE ALL OCCURRENCES OF 'â' IN lv_cmt WITH 'a'.
+  REPLACE ALL OCCURRENCES OF 'é' IN lv_cmt WITH 'e'.
+  REPLACE ALL OCCURRENCES OF 'ê' IN lv_cmt WITH 'e'.
+  REPLACE ALL OCCURRENCES OF 'í' IN lv_cmt WITH 'i'.
+  REPLACE ALL OCCURRENCES OF 'ó' IN lv_cmt WITH 'o'.
+  REPLACE ALL OCCURRENCES OF 'ô' IN lv_cmt WITH 'o'.
+  REPLACE ALL OCCURRENCES OF 'õ' IN lv_cmt WITH 'o'.
+  REPLACE ALL OCCURRENCES OF 'ú' IN lv_cmt WITH 'u'.
+
+  " Body shaped to match the v2025 sample: top-level clientMetadata
+  " plus the inner one; same field order inside requestedItems
+  " (type, id, comment, clientMetadata, removeDate).
   lv_body =
     |\{| &&
       |"requestedFor":"{ iv_identity_id }",| &&
@@ -601,7 +621,6 @@ FORM submit_request USING    iv_identity_id TYPE string
         |"type":"ACCESS_PROFILE",| &&
         |"id":"{ iv_ap_id }",| &&
         |"comment":"{ lv_cmt }",| &&
-        |"removeDate":"{ iv_end_iso }",| &&
         |"clientMetadata":\{| &&
           |"sourceSystem":"SAP-PRD",| &&
           |"tcode":"FB60",| &&
@@ -610,8 +629,14 @@ FORM submit_request USING    iv_identity_id TYPE string
           |"lifnr":"{ p_lifnr }",| &&
           |"xblnr":"{ p_xblnr }",| &&
           |"triggeredBy":"ZAUTH_TO_SAILPOINT"| &&
-        |\}| &&
-      |\}]| &&
+        |\},| &&
+        |"removeDate":"{ iv_end_iso }"| &&
+      |\}],| &&
+      |"clientMetadata":\{| &&
+        |"sourceSystem":"SAP-PRD",| &&
+        |"tcode":"FB60",| &&
+        |"triggeredBy":"ZAUTH_TO_SAILPOINT"| &&
+      |\}| &&
     |\}|.
 
   PERFORM http_exchange USING    '/v2026/access-requests' 'POST'
