@@ -1,3 +1,4 @@
 .env
 *.log
 token.txt
+.poll_state
