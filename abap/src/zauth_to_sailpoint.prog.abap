@@ -269,18 +269,27 @@ FORM ask_and_submit_request USING iv_identity_id TYPE string
     lv_t4 = |Válido até: { lv_end_iso }|.
     PERFORM inform USING 'SailPoint' lv_t1 lv_t2 lv_t3 lv_t4.
   ELSE.
-    " Error -> fire MESSAGE TYPE 'I' (info dialog) with the full
-    " debug payload so the user can copy-paste it back for analysis.
-    DATA(lv_dbg) = |HTTP={ gv_http } | &&
-                   |path={ gv_last_path } | &&
-                   |identity={ c_identity_id } | &&
-                   |ap_id={ iv_ap_id } ap_label={ iv_ap_label } | &&
-                   |today={ lv_today } end={ lv_end } | &&
-                   |start_str={ lv_start_str } end_iso={ lv_end_iso } | &&
-                   |REQUEST=>{ gv_last_body }<= | &&
-                   |RESPONSE=>{ gv_last_resp }<= | &&
-                   |ERR=>{ gv_err }<=|.
-    MESSAGE lv_dbg TYPE 'I'.
+    " Error -> open a copyable viewer with the full debug payload.
+    " MESSAGE TYPE 'I' truncates and triggers "Character String as
+    " Message"; cl_demo_output renders unbounded text in a window
+    " the user can select and copy.
+    DATA(lv_lf)  = cl_abap_char_utilities=>cr_lf.
+    DATA(lv_dbg) = |HTTP        : { gv_http }{ lv_lf }|              &&
+                   |path        : { gv_last_path }{ lv_lf }|         &&
+                   |identity    : { c_identity_id }{ lv_lf }|        &&
+                   |ap_id       : { iv_ap_id }{ lv_lf }|             &&
+                   |ap_label    : { iv_ap_label }{ lv_lf }|          &&
+                   |today (D)   : { lv_today }{ lv_lf }|             &&
+                   |end   (D)   : { lv_end }{ lv_lf }|               &&
+                   |start_str   : { lv_start_str }{ lv_lf }|         &&
+                   |end_iso     : { lv_end_iso }{ lv_lf }{ lv_lf }|  &&
+                   |=== REQUEST BODY ==={ lv_lf }|                   &&
+                   |{ gv_last_body }{ lv_lf }{ lv_lf }|              &&
+                   |=== RESPONSE BODY ==={ lv_lf }|                  &&
+                   |{ gv_last_resp }{ lv_lf }{ lv_lf }|              &&
+                   |=== ERR ==={ lv_lf }|                            &&
+                   |{ gv_err }|.
+    cl_demo_output=>display( lv_dbg ).
   ENDIF.
 ENDFORM.
 
