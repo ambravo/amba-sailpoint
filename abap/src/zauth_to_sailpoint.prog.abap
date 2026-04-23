@@ -187,26 +187,32 @@ FORM ask_and_submit_request USING iv_identity_id TYPE string
     INTO DATE lv_today TIME lv_time.
   lv_end = lv_today + 30.
 
-  " Use only basis-namespace DDIC refs (BAPIRET2, SYST) so the popup
-  " works on barebones demo tenants without FI tables (BKPF etc).
+  " POPUP_GET_VALUES needs clean DDIC-backed fields with distinct
+  " refs. BAPIRET2-MESSAGE didn't map to a popup editor cleanly, and
+  " repeating SYST-DATUM for two rows confused the FM.
+  " Basis-namespace tables that exist on every system, with three
+  " distinct fields:
+  "   text   -> TLINE-TDLINE   (CHAR 132, SAPscript text line)
+  "   start  -> USR02-GLTGV    (DATS, user-master "valid from")
+  "   end    -> USR02-GLTGB    (DATS, user-master "valid to")
   CLEAR ls_field.
-  ls_field-tabname   = 'BAPIRET2'.
-  ls_field-fieldname = 'MESSAGE'.
+  ls_field-tabname   = 'TLINE'.
+  ls_field-fieldname = 'TDLINE'.
   ls_field-fieldtext = 'Justificação'.
   ls_field-value     = |Lançamento FB60 - necessário acesso { iv_ap_label } | &&
                        |para empresa { p_bukrs }|.
   APPEND ls_field TO lt_fields.
 
   CLEAR ls_field.
-  ls_field-tabname   = 'SYST'.
-  ls_field-fieldname = 'DATUM'.
+  ls_field-tabname   = 'USR02'.
+  ls_field-fieldname = 'GLTGV'.
   ls_field-fieldtext = 'Data de início'.
   ls_field-value     = lv_today.
   APPEND ls_field TO lt_fields.
 
   CLEAR ls_field.
-  ls_field-tabname   = 'SYST'.
-  ls_field-fieldname = 'DATUM'.
+  ls_field-tabname   = 'USR02'.
+  ls_field-fieldname = 'GLTGB'.
   ls_field-fieldtext = 'Data de fim'.
   ls_field-value     = lv_end.
   APPEND ls_field TO lt_fields.
