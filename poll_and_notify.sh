@@ -3,10 +3,15 @@
 # one to a Teams channel via the Power Automate incoming webhook.
 #
 # Usage:
-#   ./poll_and_notify.sh [-v|--verbose] [WINDOW_HOURS]
+#   ./poll_and_notify.sh [-v|--verbose] [-n|--dry-run] [WINDOW_HOURS]
 #
 #   -v, --verbose  print the raw SailPoint response and the generated
 #                  Teams card payload on stderr, per run.
+#   -n, --dry-run  implies --verbose, skips the Teams HTTP POST,
+#                  bypasses the (requestId|stateLabel) dedup set so
+#                  every event shows, and does not persist .poll_state
+#                  or .poll_posted. Use this to inspect what SailPoint
+#                  is returning without side-effects.
 #   WINDOW_HOURS   how far back to look on the first run (default 4).
 #                  Ignored once .poll_state exists — delete the state
 #                  file to reset the cursor.
@@ -14,7 +19,8 @@
 # Examples:
 #   ./poll_and_notify.sh                           # 4h lookback
 #   ./poll_and_notify.sh 24                        # 24h lookback
-#   ./poll_and_notify.sh -v                        # verbose
+#   ./poll_and_notify.sh -v                        # verbose, real post
+#   ./poll_and_notify.sh --dry-run 24              # 24h lookback, no-post
 #   ./run_poller.sh 60                             # loop every 60s
 #
 # Auto-loads .env (next to the script) if present, so no need to
@@ -47,19 +53,24 @@ fi
 : "${SAILPOINT_CLIENT_ID:?}"
 : "${SAILPOINT_CLIENT_SECRET:?}"
 : "${SAILPOINT_IDENTITY_ID:?}"
-: "${TEAMS_WEBHOOK:?}"
+# TEAMS_WEBHOOK required only when actually posting.
+if (( ! DRY_RUN )); then
+  : "${TEAMS_WEBHOOK:?TEAMS_WEBHOOK required (or pass --dry-run)}"
+fi
 
 STATE_FILE="${STATE_FILE:-$SCRIPT_DIR/.poll_state}"
 POSTED_FILE="${POSTED_FILE:-$SCRIPT_DIR/.poll_posted}"
 
 # --- Parse args (order-independent) ---
 VERBOSE=0
+DRY_RUN=0
 WINDOW_HOURS=4
 while (( $# )); do
   case "$1" in
     -v|--verbose) VERBOSE=1; shift ;;
+    -n|--dry-run) DRY_RUN=1; VERBOSE=1; shift ;;
     -h|--help)
-      sed -n '1,30p' "$0"; exit 0 ;;
+      sed -n '1,35p' "$0"; exit 0 ;;
     *)            WINDOW_HOURS="$1"; shift ;;
   esac
 done
@@ -209,9 +220,10 @@ while IFS= read -r ITEM; do
 
   # Dedup: same (reqId + human state label) means we already told
   # Teams about this transition - skip. Every real state change flips
-  # STATE_LABEL so we still notify once per transition.
+  # STATE_LABEL so we still notify once per transition. Dry-run
+  # bypasses dedup so the operator sees everything.
   DEDUP_KEY="${REQID}|${STATE_LABEL}"
-  if [[ -n "${POSTED[$DEDUP_KEY]:-}" ]]; then
+  if (( ! DRY_RUN )) && [[ -n "${POSTED[$DEDUP_KEY]:-}" ]]; then
     log_verbose "skip already-posted: $DEDUP_KEY"
     [[ "$MOD" > "$NEW_LAST" ]] && NEW_LAST="$MOD"
     continue
@@ -279,26 +291,33 @@ while IFS= read -r ITEM; do
     echo "-- end event --" >&2
   fi
 
-  curl -sS -X POST "$TEAMS_WEBHOOK" \
-    -H "Content-Type: application/json" \
-    -d "$CARD" > /dev/null
+  if (( DRY_RUN )); then
+    echo "DRY-RUN (not posted): ${REQTYPE} ${STATE_LABEL} ${IDENTITY} / ${ITEMNAME}  [${MOD}]"
+  else
+    curl -sS -X POST "$TEAMS_WEBHOOK" \
+      -H "Content-Type: application/json" \
+      -d "$CARD" > /dev/null
+    echo "Posted: ${REQTYPE} ${STATE_LABEL} ${IDENTITY} / ${ITEMNAME}  [${MOD}]"
 
-  echo "Posted: ${REQTYPE} ${STATE_LABEL} ${IDENTITY} / ${ITEMNAME}  [${MOD}]"
+    # Record in dedup set and persist immediately so a crash mid-loop
+    # doesn't cause replays.
+    POSTED["$DEDUP_KEY"]=1
+    echo "$DEDUP_KEY" >> "$POSTED_FILE"
+  fi
 
-  # Record in dedup set and persist immediately so a crash mid-loop
-  # doesn't cause replays.
-  POSTED["$DEDUP_KEY"]=1
-  echo "$DEDUP_KEY" >> "$POSTED_FILE"
   POSTED_COUNT=$((POSTED_COUNT + 1))
-
   [[ "$MOD" > "$NEW_LAST" ]] && NEW_LAST="$MOD"
 done < <(echo "$RESP" | jq -c '.[]')
 
 # ---------------------------------------------------------------------
-# 4. Persist the latest timestamp seen.
+# 4. Persist the latest timestamp seen (skipped in --dry-run).
 # ---------------------------------------------------------------------
-if [[ "$NEW_LAST" != "$LAST" ]]; then
+if (( ! DRY_RUN )) && [[ "$NEW_LAST" != "$LAST" ]]; then
   echo "$NEW_LAST" > "$STATE_FILE"
 fi
 
-echo "poll complete — posted=${POSTED_COUNT} last_seen=${NEW_LAST}"
+if (( DRY_RUN )); then
+  echo "DRY-RUN complete — seen=${POSTED_COUNT} (no Teams post, no state persisted) last_seen=${NEW_LAST}"
+else
+  echo "poll complete — posted=${POSTED_COUNT} last_seen=${NEW_LAST}"
+fi
