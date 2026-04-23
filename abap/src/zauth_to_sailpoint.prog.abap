@@ -260,8 +260,8 @@ FORM ask_and_submit_request USING iv_identity_id TYPE string
     lv_t4 = ''.
   ELSE.
     lv_t1 = |Pedido rejeitado (HTTP { gv_http }).|.
-    lv_t2 = 'Ver SM21 / ST22 para resposta completa.'.
-    lv_t3 = ''.
+    lv_t2 = gv_err.
+    lv_t3 = 'Ver SM21 / ST22 para resposta completa.'.
     lv_t4 = ''.
   ENDIF.
 
@@ -488,13 +488,16 @@ FORM list_and_pick_access_profile
     RETURN.
   ENDIF.
 
+  " ddshretval-FIELDVAL is CHAR 30 -> truncates 32-char SailPoint
+  " GUIDs. Use RECORDPOS to read the full row from lt_aps.
   READ TABLE lt_return INTO ls_return INDEX 1.
-  cv_ap_id = ls_return-fieldval.
-
-  READ TABLE lt_aps INTO ls_ap WITH KEY id = cv_ap_id.
-  IF sy-subrc = 0.
-    cv_ap_label = ls_ap-name.
+  READ TABLE lt_aps INTO ls_ap INDEX ls_return-recordpos.
+  IF sy-subrc <> 0.
+    cv_err = |Linha picada não encontrada (recordpos { ls_return-recordpos }).|.
+    RETURN.
   ENDIF.
+  cv_ap_id    = ls_ap-id.
+  cv_ap_label = ls_ap-name.
 ENDFORM.
 
 FORM check_identity_has_access USING    iv_identity_id TYPE string
@@ -577,5 +580,8 @@ FORM submit_request USING    iv_identity_id TYPE string
   IF cv_http = 200 OR cv_http = 201 OR cv_http = 202.
     FIND REGEX '"id"\s*:\s*"([^"]+)"'
          IN lv_resp SUBMATCHES cv_reqid.
+  ELSEIF cv_err IS INITIAL.
+    " Surface the SailPoint error body so the result popup is useful.
+    cv_err = |HTTP { cv_http }: { lv_resp }|.
   ENDIF.
 ENDFORM.
