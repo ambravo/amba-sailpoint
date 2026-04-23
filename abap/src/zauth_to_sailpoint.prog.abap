@@ -584,59 +584,19 @@ FORM submit_request USING    iv_identity_id TYPE string
                              cv_http        TYPE i
                              cv_err         TYPE string.
   DATA: lv_body TYPE string,
-        lv_resp TYPE string,
-        lv_cmt  TYPE string.
+        lv_resp TYPE string.
 
-  lv_cmt = iv_comment.
-  REPLACE ALL OCCURRENCES OF '\' IN lv_cmt WITH '\\'.
-  REPLACE ALL OCCURRENCES OF '"' IN lv_cmt WITH '\"'.
-  REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>cr_lf   IN lv_cmt WITH ' '.
-  REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>newline IN lv_cmt WITH ' '.
-
-  " ASCII-fold the comment so SailPoint's JSON parser can't blame
-  " UTF-8 multi-byte sequences. Loses Portuguese accents on the wire
-  " (popup label stays PT for the human).
-  REPLACE ALL OCCURRENCES OF 'ç' IN lv_cmt WITH 'c'.
-  REPLACE ALL OCCURRENCES OF 'Ç' IN lv_cmt WITH 'C'.
-  REPLACE ALL OCCURRENCES OF 'ã' IN lv_cmt WITH 'a'.
-  REPLACE ALL OCCURRENCES OF 'á' IN lv_cmt WITH 'a'.
-  REPLACE ALL OCCURRENCES OF 'à' IN lv_cmt WITH 'a'.
-  REPLACE ALL OCCURRENCES OF 'â' IN lv_cmt WITH 'a'.
-  REPLACE ALL OCCURRENCES OF 'é' IN lv_cmt WITH 'e'.
-  REPLACE ALL OCCURRENCES OF 'ê' IN lv_cmt WITH 'e'.
-  REPLACE ALL OCCURRENCES OF 'í' IN lv_cmt WITH 'i'.
-  REPLACE ALL OCCURRENCES OF 'ó' IN lv_cmt WITH 'o'.
-  REPLACE ALL OCCURRENCES OF 'ô' IN lv_cmt WITH 'o'.
-  REPLACE ALL OCCURRENCES OF 'õ' IN lv_cmt WITH 'o'.
-  REPLACE ALL OCCURRENCES OF 'ú' IN lv_cmt WITH 'u'.
-
-  " Body shaped to match the v2025 sample: top-level clientMetadata
-  " plus the inner one; same field order inside requestedItems
-  " (type, id, comment, clientMetadata, removeDate).
+  " Bare-minimum payload. requestedFor is an ARRAY of identity ids.
+  " comment / removeDate / clientMetadata reintroduced once this works.
+  " iv_comment / iv_start / iv_end_iso intentionally unused for now.
   lv_body =
     |\{| &&
-      |"requestedFor":"{ iv_identity_id }",| &&
+      |"requestedFor":["{ iv_identity_id }"],| &&
       |"requestType":"GRANT_ACCESS",| &&
       |"requestedItems":[\{| &&
         |"type":"ACCESS_PROFILE",| &&
-        |"id":"{ iv_ap_id }",| &&
-        |"comment":"{ lv_cmt }",| &&
-        |"clientMetadata":\{| &&
-          |"sourceSystem":"SAP-PRD",| &&
-          |"tcode":"FB60",| &&
-          |"accessStartDate":"{ iv_start }",| &&
-          |"bukrs":"{ p_bukrs }",| &&
-          |"lifnr":"{ p_lifnr }",| &&
-          |"xblnr":"{ p_xblnr }",| &&
-          |"triggeredBy":"ZAUTH_TO_SAILPOINT"| &&
-        |\},| &&
-        |"removeDate":"{ iv_end_iso }"| &&
-      |\}],| &&
-      |"clientMetadata":\{| &&
-        |"sourceSystem":"SAP-PRD",| &&
-        |"tcode":"FB60",| &&
-        |"triggeredBy":"ZAUTH_TO_SAILPOINT"| &&
-      |\}| &&
+        |"id":"{ iv_ap_id }"| &&
+      |\}]| &&
     |\}|.
 
   PERFORM http_exchange USING    '/v2026/access-requests' 'POST'
