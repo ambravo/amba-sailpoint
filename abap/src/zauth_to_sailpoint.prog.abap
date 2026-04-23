@@ -46,7 +46,15 @@
 *& token automatically for every create_by_destination call. No
 *& Authorization header is set manually anywhere in this report.
 *&
-*& Technical keywords in EN, user-facing text in PT.
+*& Endpoints hit:
+*&   /v3/search             identities lookup, accessprofiles lookup,
+*&                          identity-has-access check
+*&                          (search hasn't been moved to a dated path)
+*&   /v2026/access-requests submit GRANT_ACCESS request
+*&
+*& Technical keywords in EN, user-facing text in PT. Access profile
+*& lives in SailPoint as "Accounts Payable"; the popups call it by
+*& its PT label "Contas a Pagar".
 *&---------------------------------------------------------------------*
 REPORT zauth_to_sailpoint.
 
@@ -55,7 +63,10 @@ REPORT zauth_to_sailpoint.
 *----------------------------------------------------------------------*
 CONSTANTS:
   c_rfc_dest  TYPE rfcdest  VALUE 'ZSAILPOINT',
-  c_ap_name   TYPE string   VALUE 'Contas a Pagar',
+  " The access profile is created in SailPoint with the EN name; we
+  " keep a PT label for popups to stay consistent with the rest of UI.
+  c_ap_name   TYPE string   VALUE 'Accounts Payable',
+  c_ap_label  TYPE string   VALUE 'Contas a Pagar',
   c_tz_madrid TYPE timezone VALUE 'CET'.
 
 *----------------------------------------------------------------------*
@@ -117,7 +128,7 @@ START-OF-SELECTION.
                                  CHANGING gv_ap_id gv_err.
   IF gv_ap_id IS INITIAL.
     PERFORM inform_err
-      USING |Access profile '{ c_ap_name }' não encontrado.| gv_err.
+      USING |Access profile '{ c_ap_label }' não encontrado.| gv_err.
     RETURN.
   ENDIF.
 
@@ -163,7 +174,7 @@ FORM ask_and_submit_request USING iv_identity_id TYPE string
   ls_field-tabname   = 'BAPIRET2'.
   ls_field-fieldname = 'MESSAGE'.
   ls_field-fieldtext = 'Justificação'.
-  ls_field-value     = |Lançamento FB60 - necessário acesso { c_ap_name } | &&
+  ls_field-value     = |Lançamento FB60 - necessário acesso { c_ap_label } | &&
                        |para empresa { p_bukrs }|.
   APPEND ls_field TO lt_fields.
 
@@ -183,7 +194,7 @@ FORM ask_and_submit_request USING iv_identity_id TYPE string
 
   CALL FUNCTION 'POPUP_GET_VALUES'
     EXPORTING
-      popup_title     = |Pedido de acesso - { c_ap_name }|
+      popup_title     = |Pedido de acesso - { c_ap_label }|
       start_column    = 10
       start_row       = 5
     IMPORTING
@@ -454,7 +465,7 @@ FORM submit_request USING    iv_identity_id TYPE string
 
   lv_body =
     |\{| &&
-      |"requestedFor":["{ iv_identity_id }"],| &&
+      |"requestedFor":"{ iv_identity_id }",| &&
       |"requestType":"GRANT_ACCESS",| &&
       |"requestedItems":[\{| &&
         |"type":"ACCESS_PROFILE",| &&
@@ -473,7 +484,7 @@ FORM submit_request USING    iv_identity_id TYPE string
       |\}]| &&
     |\}|.
 
-  PERFORM http_exchange USING    '/v3/access-requests' 'POST'
+  PERFORM http_exchange USING    '/v2026/access-requests' 'POST'
                                  'application/json' lv_body
                         CHANGING cv_http lv_resp cv_err.
 
