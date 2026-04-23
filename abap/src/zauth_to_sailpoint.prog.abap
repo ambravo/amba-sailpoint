@@ -7,44 +7,59 @@
 *& the invoice is "posted". If not, the user is offered the chance to
 *& submit a time-bound (30 day) access request with a justification.
 *&
-*& Only the OAuth client_id / client_secret are needed - the identity
-*& id and access-profile id are resolved at runtime by name via
-*& /v3/search, so no GUIDs have to be hand-copied from the tenant.
+*& NO credentials, host or URL live in this source. Everything routes
+*& through an SM59 HTTP destination + OA2C_CONFIG OAuth 2.0 client
+*& profile, so rotation is a Basis action (not a code change).
 *&
 *& ---------------------------------------------------------------
-*& SSL prerequisites
+*& One-time setup in SAP
 *& ---------------------------------------------------------------
-*& SailPoint tenants use TLS with a public CA. The SAP "SSL client
-*& (Anonymous)" PSE must trust that chain. If the HTTP call fails
-*& with ICM_HTTP_SSL_ERROR / SSL handshake error:
-*&   1. Get chain: openssl s_client -showcerts -servername \
-*&        company21824-poc.api.identitynow-demo.com \
-*&        -connect company21824-poc.api.identitynow-demo.com:443 \
-*&        </dev/null
-*&      Save each "-----BEGIN CERTIFICATE-----" block to a .cer file.
-*&   2. STRUST -> "SSL client SSL Client (Anonymous)" (double-click)
-*&   3. Import Certificate -> pick each .cer -> Add to Certificate
-*&      List. Save PSE.
-*&   4. SMICM -> Administration -> ICM -> Reset (or restart).
+*&
+*& 1. tx STRUST
+*&    - "SSL client SSL Client (Anonymous)" PSE must trust the
+*&      SailPoint tenant cert chain. Import intermediate + root .cer
+*&      files, save, then SMICM -> Administration -> ICM -> reset.
+*&
+*& 2. tx OA2C_CONFIG (or SOAMANAGER -> OAuth 2.0 Client)
+*&    - Create client profile: ZSAILPOINT_OAUTH
+*&    - Grant type:            client_credentials
+*&    - Client ID:              <from SailPoint API management>
+*&    - Client Secret:          <from SailPoint API management>
+*&    - Token endpoint URL:     https://<tenant>.api.identitynow-demo.com/oauth/token
+*&    - Scope:                  (blank, unless tenant requires one)
+*&
+*& 3. tx SM59
+*&    - Create connection type G (HTTP to External Server)
+*&    - Destination name:       ZSAILPOINT              <-- c_rfc_dest
+*&    - Target host:            <tenant>.api.identitynow-demo.com
+*&    - Service No.:            443
+*&    - Path Prefix:            /
+*&    - Logon & Security tab:
+*&         SSL:                 Active
+*&         SSL Cert:            ANONYM (or your PSE)
+*&         Authentication:      OAuth 2.0
+*&         OAuth 2.0 Profile:   ZSAILPOINT_OAUTH
+*&    - Connection Test must return HTTP 401 or similar; 200 only if
+*&      the first call has already minted a token.
+*&
+*& Thereafter the ABAP kernel fetches, caches and refreshes the bearer
+*& token automatically for every create_by_destination call. No
+*& Authorization header is set manually anywhere in this report.
 *&
 *& Technical keywords in EN, user-facing text in PT.
 *&---------------------------------------------------------------------*
 REPORT zauth_to_sailpoint.
 
 *----------------------------------------------------------------------*
-* Constants - only OAuth credentials and the AP name are needed.
-* IDs are discovered at runtime.
+* Constants - only the SM59 dest name and AP name live in code.
 *----------------------------------------------------------------------*
 CONSTANTS:
-  c_tenant_api TYPE string   VALUE 'https://company21824-poc.api.identitynow-demo.com',
-  c_client_id  TYPE string   VALUE '43a4f8cd5fca43e1ac891ac9f5b9d711',
-  c_client_sec TYPE string   VALUE '<<INJECT_AT_RUNTIME>>',
-  c_ap_name    TYPE string   VALUE 'Contas a Pagar',
-  c_tz_madrid  TYPE timezone VALUE 'CET'.
+  c_rfc_dest  TYPE rfcdest  VALUE 'ZSAILPOINT',
+  c_ap_name   TYPE string   VALUE 'Contas a Pagar',
+  c_tz_madrid TYPE timezone VALUE 'CET'.
 
 *----------------------------------------------------------------------*
 * Selection screen - COMMENT + text symbols so PT labels always render
-* (no DDIC fallback, no logon-language surprises).
 *----------------------------------------------------------------------*
 SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-t01.
   SELECTION-SCREEN BEGIN OF LINE.
@@ -77,8 +92,7 @@ SELECTION-SCREEN BEGIN OF BLOCK b2 WITH FRAME TITLE TEXT-t02.
 SELECTION-SCREEN END OF BLOCK b2.
 
 *----------------------------------------------------------------------*
-DATA: gv_token       TYPE string,
-      gv_identity_id TYPE string,
+DATA: gv_identity_id TYPE string,
       gv_id_display  TYPE string,
       gv_ap_id       TYPE string,
       gv_has_access  TYPE abap_bool,
@@ -89,13 +103,7 @@ DATA: gv_token       TYPE string,
 *----------------------------------------------------------------------*
 START-OF-SELECTION.
 
-  PERFORM get_oauth_token CHANGING gv_token gv_err.
-  IF gv_token IS INITIAL.
-    PERFORM inform_err USING 'Falha na autenticação OAuth.' gv_err.
-    RETURN.
-  ENDIF.
-
-  PERFORM resolve_identity USING    gv_token p_spuser
+  PERFORM resolve_identity USING    p_spuser
                            CHANGING gv_identity_id
                                     gv_id_display
                                     gv_err.
@@ -105,7 +113,7 @@ START-OF-SELECTION.
     RETURN.
   ENDIF.
 
-  PERFORM resolve_access_profile USING    gv_token c_ap_name
+  PERFORM resolve_access_profile USING    c_ap_name
                                  CHANGING gv_ap_id gv_err.
   IF gv_ap_id IS INITIAL.
     PERFORM inform_err
@@ -113,8 +121,7 @@ START-OF-SELECTION.
     RETURN.
   ENDIF.
 
-  PERFORM check_identity_has_access USING    gv_token
-                                             gv_identity_id
+  PERFORM check_identity_has_access USING    gv_identity_id
                                              gv_ap_id
                                     CHANGING gv_has_access
                                              gv_err.
@@ -126,13 +133,10 @@ START-OF-SELECTION.
     RETURN.
   ENDIF.
 
-  PERFORM ask_and_submit_request USING gv_token gv_identity_id gv_ap_id.
+  PERFORM ask_and_submit_request USING gv_identity_id gv_ap_id.
 
 *&---------------------------------------------------------------------*
-*&  Popup: ask for justification + dates, then submit to SailPoint
-*&---------------------------------------------------------------------*
-FORM ask_and_submit_request USING iv_token       TYPE string
-                                  iv_identity_id TYPE string
+FORM ask_and_submit_request USING iv_identity_id TYPE string
                                   iv_ap_id       TYPE string.
 
   DATA: lt_fields    TYPE TABLE OF sval,
@@ -150,7 +154,6 @@ FORM ask_and_submit_request USING iv_token       TYPE string
         lv_t3        TYPE string,
         lv_t4        TYPE string.
 
-  " Default dates in Madrid timezone (CET / CEST with DST)
   GET TIME STAMP FIELD lv_ts.
   CONVERT TIME STAMP lv_ts TIME ZONE c_tz_madrid
     INTO DATE lv_today TIME lv_time.
@@ -205,8 +208,7 @@ FORM ask_and_submit_request USING iv_token       TYPE string
   lv_start_str = |{ lv_today+0(4) }-{ lv_today+4(2) }-{ lv_today+6(2) }|.
   lv_end_iso   = |{ lv_end+0(4)   }-{ lv_end+4(2)   }-{ lv_end+6(2)   }T00:00:00.000Z|.
 
-  PERFORM submit_request USING    iv_token
-                                  iv_identity_id
+  PERFORM submit_request USING    iv_identity_id
                                   iv_ap_id
                                   lv_comment
                                   lv_start_str
@@ -226,7 +228,7 @@ FORM ask_and_submit_request USING iv_token       TYPE string
   ELSEIF gv_http = 0.
     lv_t1 = 'Falha na comunicação HTTP.'.
     lv_t2 = gv_err.
-    lv_t3 = 'Ver STRUST (SSL client Anonymous).'.
+    lv_t3 = |Ver SM59 '{ c_rfc_dest }' e STRUST.|.
     lv_t4 = ''.
   ELSE.
     lv_t1 = |Pedido rejeitado (HTTP { gv_http }).|.
@@ -266,45 +268,46 @@ FORM inform_err USING iv_summary TYPE string
         lv_l3 TYPE string.
   lv_l1 = iv_summary.
   lv_l2 = iv_detail.
-  lv_l3 = 'Ver STRUST, SM21 ou ST22 para detalhes.'.
+  lv_l3 = |Ver SM59 '{ c_rfc_dest }', OA2C_CONFIG e STRUST.|.
   PERFORM inform USING 'SailPoint' lv_l1 lv_l2 lv_l3 ''.
 ENDFORM.
 
 *======================================================================*
-*  HTTP helper - single place for send/receive + error capture
+*  HTTP helper - one place for destination, send/receive, error capture.
+*  Authorization header is set by the kernel via OA2C profile, not here.
 *======================================================================*
-FORM http_exchange USING    iv_url      TYPE string
-                            iv_method   TYPE string
-                            iv_token    TYPE string    " '' = no auth header
-                            iv_ctype    TYPE string
-                            iv_body     TYPE string
-                   CHANGING cv_code     TYPE i
-                            cv_resp     TYPE string
-                            cv_err      TYPE string.
+FORM http_exchange USING    iv_path   TYPE string
+                            iv_method TYPE string
+                            iv_ctype  TYPE string
+                            iv_body   TYPE string
+                   CHANGING cv_code   TYPE i
+                            cv_resp   TYPE string
+                            cv_err    TYPE string.
   DATA: lo_http TYPE REF TO if_http_client,
         lv_msg  TYPE string.
 
   CLEAR: cv_code, cv_resp, cv_err.
 
-  cl_http_client=>create_by_url(
-    EXPORTING  url                = iv_url
-               ssl_id             = 'ANONYM'
-    IMPORTING  client             = lo_http
-    EXCEPTIONS argument_not_found = 1
-               plugin_not_active  = 2
-               internal_error     = 3
-               OTHERS             = 4 ).
+  cl_http_client=>create_by_destination(
+    EXPORTING  destination              = c_rfc_dest
+    IMPORTING  client                   = lo_http
+    EXCEPTIONS argument_not_found       = 1
+               destination_not_found    = 2
+               destination_no_authority = 3
+               plugin_not_active        = 4
+               internal_error           = 5
+               OTHERS                   = 6 ).
   IF sy-subrc <> 0.
-    cv_err = |create_by_url failed sy-subrc={ sy-subrc }|.
+    cv_err = |create_by_destination '{ c_rfc_dest }' failed sy-subrc={ sy-subrc }|.
     RETURN.
   ENDIF.
 
+  cl_http_utility=>set_request_uri(
+    request = lo_http->request
+    uri     = iv_path ).
+
   lo_http->request->set_method( iv_method ).
   lo_http->request->set_header_field( name = 'Content-Type' value = iv_ctype ).
-  IF iv_token IS NOT INITIAL.
-    lo_http->request->set_header_field(
-      name = 'Authorization' value = |Bearer { iv_token }| ).
-  ENDIF.
   IF iv_body IS NOT INITIAL.
     lo_http->request->set_cdata( iv_body ).
   ENDIF.
@@ -337,55 +340,16 @@ ENDFORM.
 *======================================================================*
 *  SailPoint ISC helpers
 *======================================================================*
-FORM get_oauth_token CHANGING cv_token TYPE string
-                              cv_err   TYPE string.
-  DATA: lv_url  TYPE string,
-        lv_body TYPE string,
-        lv_resp TYPE string,
-        lv_code TYPE i.
-
-  lv_url  = |{ c_tenant_api }/oauth/token|.
-  lv_body = |grant_type=client_credentials|  &&
-            |&client_id={ c_client_id }|     &&
-            |&client_secret={ c_client_sec }|.
-
-  PERFORM http_exchange USING    lv_url
-                                 'POST'
-                                 ''
-                                 'application/x-www-form-urlencoded'
-                                 lv_body
-                        CHANGING lv_code lv_resp cv_err.
-
-  IF lv_code <> 200.
-    IF cv_err IS INITIAL.
-      cv_err = |HTTP { lv_code }: { lv_resp }|.
-    ENDIF.
-    CLEAR cv_token.
-    RETURN.
-  ENDIF.
-
-  " Crude JSON parse. In real Z code use /UI2/CL_JSON.
-  FIND REGEX '"access_token"\s*:\s*"([^"]+)"'
-       IN lv_resp SUBMATCHES cv_token.
-ENDFORM.
-
-*----------------------------------------------------------------------*
-*  POST /v3/search indices=identities query="name:X OR alias:X OR email:X"
-*  Returns first match id + displayName.
-*----------------------------------------------------------------------*
-FORM resolve_identity USING    iv_token     TYPE string
-                               iv_user      TYPE string
-                      CHANGING cv_id        TYPE string
-                               cv_display   TYPE string
-                               cv_err       TYPE string.
-  DATA: lv_url  TYPE string,
-        lv_body TYPE string,
+FORM resolve_identity USING    iv_user    TYPE string
+                      CHANGING cv_id      TYPE string
+                               cv_display TYPE string
+                               cv_err     TYPE string.
+  DATA: lv_body TYPE string,
         lv_resp TYPE string,
         lv_code TYPE i,
         lv_q    TYPE string.
 
-  lv_url = |{ c_tenant_api }/v3/search|.
-  lv_q   = |name:"{ iv_user }" OR alias:"{ iv_user }" OR email:"{ iv_user }"|.
+  lv_q    = |name:"{ iv_user }" OR alias:"{ iv_user }" OR email:"{ iv_user }"|.
   lv_body =
     |\{| &&
       |"indices":["identities"],| &&
@@ -393,7 +357,7 @@ FORM resolve_identity USING    iv_token     TYPE string
       |"sort":["-_score"]| &&
     |\}|.
 
-  PERFORM http_exchange USING    lv_url 'POST' iv_token
+  PERFORM http_exchange USING    '/v3/search' 'POST'
                                  'application/json' lv_body
                         CHANGING lv_code lv_resp cv_err.
 
@@ -409,26 +373,20 @@ FORM resolve_identity USING    iv_token     TYPE string
   FIND REGEX '"displayName"\s*:\s*"([^"]*)"' IN lv_resp SUBMATCHES cv_display.
 ENDFORM.
 
-*----------------------------------------------------------------------*
-*  POST /v3/search indices=accessprofiles query="name.exact:X"
-*----------------------------------------------------------------------*
-FORM resolve_access_profile USING    iv_token   TYPE string
-                                     iv_ap_name TYPE string
+FORM resolve_access_profile USING    iv_ap_name TYPE string
                             CHANGING cv_ap_id   TYPE string
                                      cv_err     TYPE string.
-  DATA: lv_url  TYPE string,
-        lv_body TYPE string,
+  DATA: lv_body TYPE string,
         lv_resp TYPE string,
         lv_code TYPE i.
 
-  lv_url = |{ c_tenant_api }/v3/search|.
   lv_body =
     |\{| &&
       |"indices":["accessprofiles"],| &&
       |"query":\{"query":"name.exact:\\"{ iv_ap_name }\\""\}| &&
     |\}|.
 
-  PERFORM http_exchange USING    lv_url 'POST' iv_token
+  PERFORM http_exchange USING    '/v3/search' 'POST'
                                  'application/json' lv_body
                         CHANGING lv_code lv_resp cv_err.
 
@@ -443,21 +401,15 @@ FORM resolve_access_profile USING    iv_token   TYPE string
   FIND REGEX '"id"\s*:\s*"([^"]+)"' IN lv_resp SUBMATCHES cv_ap_id.
 ENDFORM.
 
-*----------------------------------------------------------------------*
-*  Is the access profile already assigned to the identity?
-*----------------------------------------------------------------------*
-FORM check_identity_has_access USING    iv_token       TYPE string
-                                        iv_identity_id TYPE string
+FORM check_identity_has_access USING    iv_identity_id TYPE string
                                         iv_ap_id       TYPE string
                                CHANGING cv_has_access  TYPE abap_bool
                                         cv_err         TYPE string.
-  DATA: lv_url  TYPE string,
-        lv_body TYPE string,
+  DATA: lv_body TYPE string,
         lv_resp TYPE string,
         lv_code TYPE i.
 
   CLEAR cv_has_access.
-  lv_url = |{ c_tenant_api }/v3/search|.
   lv_body =
     |\{| &&
       |"indices":["identities"],| &&
@@ -466,7 +418,7 @@ FORM check_identity_has_access USING    iv_token       TYPE string
       |\}| &&
     |\}|.
 
-  PERFORM http_exchange USING    lv_url 'POST' iv_token
+  PERFORM http_exchange USING    '/v3/search' 'POST'
                                  'application/json' lv_body
                         CHANGING lv_code lv_resp cv_err.
 
@@ -482,11 +434,7 @@ FORM check_identity_has_access USING    iv_token       TYPE string
   ENDIF.
 ENDFORM.
 
-*----------------------------------------------------------------------*
-*  POST /v3/access-requests with justification + removeDate
-*----------------------------------------------------------------------*
-FORM submit_request USING    iv_token       TYPE string
-                             iv_identity_id TYPE string
+FORM submit_request USING    iv_identity_id TYPE string
                              iv_ap_id       TYPE string
                              iv_comment     TYPE string
                              iv_start       TYPE string
@@ -494,8 +442,7 @@ FORM submit_request USING    iv_token       TYPE string
                     CHANGING cv_reqid       TYPE string
                              cv_http        TYPE i
                              cv_err         TYPE string.
-  DATA: lv_url  TYPE string,
-        lv_body TYPE string,
+  DATA: lv_body TYPE string,
         lv_resp TYPE string,
         lv_cmt  TYPE string.
 
@@ -505,7 +452,6 @@ FORM submit_request USING    iv_token       TYPE string
   REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>cr_lf   IN lv_cmt WITH ' '.
   REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>newline IN lv_cmt WITH ' '.
 
-  lv_url = |{ c_tenant_api }/v3/access-requests|.
   lv_body =
     |\{| &&
       |"requestedFor":["{ iv_identity_id }"],| &&
@@ -527,7 +473,7 @@ FORM submit_request USING    iv_token       TYPE string
       |\}]| &&
     |\}|.
 
-  PERFORM http_exchange USING    lv_url 'POST' iv_token
+  PERFORM http_exchange USING    '/v3/access-requests' 'POST'
                                  'application/json' lv_body
                         CHANGING cv_http lv_resp cv_err.
 
