@@ -268,29 +268,29 @@ FORM ask_and_submit_request USING iv_identity_id TYPE string
     lv_t3 = |Identidade: { c_identity_id }|.
     lv_t4 = |Válido até: { lv_end_iso }|.
     PERFORM inform USING 'SailPoint' lv_t1 lv_t2 lv_t3 lv_t4.
-  ELSE.
-    " Error -> open a copyable viewer with the full debug payload.
-    " MESSAGE TYPE 'I' truncates and triggers "Character String as
-    " Message"; cl_demo_output renders unbounded text in a window
-    " the user can select and copy.
-    DATA(lv_lf)  = cl_abap_char_utilities=>cr_lf.
-    DATA(lv_dbg) = |HTTP        : { gv_http }{ lv_lf }|              &&
-                   |path        : { gv_last_path }{ lv_lf }|         &&
-                   |identity    : { c_identity_id }{ lv_lf }|        &&
-                   |ap_id       : { iv_ap_id }{ lv_lf }|             &&
-                   |ap_label    : { iv_ap_label }{ lv_lf }|          &&
-                   |today (D)   : { lv_today }{ lv_lf }|             &&
-                   |end   (D)   : { lv_end }{ lv_lf }|               &&
-                   |start_str   : { lv_start_str }{ lv_lf }|         &&
-                   |end_iso     : { lv_end_iso }{ lv_lf }{ lv_lf }|  &&
-                   |=== REQUEST BODY ==={ lv_lf }|                   &&
-                   |{ gv_last_body }{ lv_lf }{ lv_lf }|              &&
-                   |=== RESPONSE BODY ==={ lv_lf }|                  &&
-                   |{ gv_last_resp }{ lv_lf }{ lv_lf }|              &&
-                   |=== ERR ==={ lv_lf }|                            &&
-                   |{ gv_err }|.
-    cl_demo_output=>display( lv_dbg ).
   ENDIF.
+
+  " Always show the debug viewer (success and error), after the popup.
+  " cl_demo_output renders unbounded text in a copyable window.
+  DATA(lv_lf)  = cl_abap_char_utilities=>cr_lf.
+  DATA(lv_dbg) = |HTTP        : { gv_http }{ lv_lf }|              &&
+                 |path        : { gv_last_path }{ lv_lf }|         &&
+                 |identity    : { c_identity_id }{ lv_lf }|        &&
+                 |ap_id       : { iv_ap_id }{ lv_lf }|             &&
+                 |ap_label    : { iv_ap_label }{ lv_lf }|          &&
+                 |today (D)   : { lv_today }{ lv_lf }|             &&
+                 |end   (D)   : { lv_end }{ lv_lf }|               &&
+                 |start_str   : { lv_start_str }{ lv_lf }|         &&
+                 |end_iso     : { lv_end_iso }{ lv_lf }{ lv_lf }|  &&
+                 |=== REQUEST BODY ==={ lv_lf }|                   &&
+                 |{ gv_last_body }{ lv_lf }{ lv_lf }|              &&
+                 |=== RESPONSE BODY ==={ lv_lf }|                  &&
+                 |{ gv_last_resp }{ lv_lf }{ lv_lf }|              &&
+                 |=== REQUEST ID ==={ lv_lf }|                     &&
+                 |{ gv_reqid }{ lv_lf }{ lv_lf }|                  &&
+                 |=== ERR ==={ lv_lf }|                            &&
+                 |{ gv_err }|.
+  cl_demo_output=>display( lv_dbg ).
 ENDFORM.
 
 *&---------------------------------------------------------------------*
@@ -530,16 +530,22 @@ FORM list_and_pick_access_profile
     RETURN.
   ENDIF.
 
-  " ddshretval-FIELDVAL is CHAR 30 -> truncates 32-char SailPoint
-  " GUIDs. Use RECORDPOS to read the full row from lt_aps.
+  " ddshretval-FIELDVAL is CHAR 30 -> truncates 32-char SailPoint GUIDs.
+  " RECORDPOS came back wrong on the target system (always pointed at
+  " row 1 = Accounts Payable), so match by first 30 chars of the id.
+  " First 30 hex chars of a SailPoint GUID are unique in practice.
   READ TABLE lt_return INTO ls_return INDEX 1.
-  READ TABLE lt_aps INTO ls_ap INDEX ls_return-recordpos.
-  IF sy-subrc <> 0.
-    cv_err = |Linha picada não encontrada (recordpos { ls_return-recordpos }).|.
-    RETURN.
+  LOOP AT lt_aps INTO ls_ap.
+    IF ls_ap-id(30) = ls_return-fieldval(30).
+      cv_ap_id    = ls_ap-id.
+      cv_ap_label = ls_ap-name.
+      EXIT.
+    ENDIF.
+  ENDLOOP.
+
+  IF cv_ap_id IS INITIAL.
+    cv_err = |Linha picada não encontrada. fieldval='{ ls_return-fieldval }' recordpos={ ls_return-recordpos }|.
   ENDIF.
-  cv_ap_id    = ls_ap-id.
-  cv_ap_label = ls_ap-name.
 ENDFORM.
 
 FORM check_identity_has_access USING    iv_identity_id TYPE string
@@ -595,6 +601,8 @@ FORM submit_request USING    iv_identity_id TYPE string
   REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>cr_lf   IN lv_cmt WITH ' '.
   REPLACE ALL OCCURRENCES OF cl_abap_char_utilities=>newline IN lv_cmt WITH ' '.
 
+  " removeDate carries the end date/time (ISO 8601 UTC); SailPoint
+  " auto-revokes at that moment. The AP may require it per config.
   lv_body =
     |\{| &&
       |"requestedFor":["{ iv_identity_id }"],| &&
@@ -602,7 +610,8 @@ FORM submit_request USING    iv_identity_id TYPE string
       |"requestedItems":[\{| &&
         |"type":"ACCESS_PROFILE",| &&
         |"id":"{ iv_ap_id }",| &&
-        |"comment":"{ lv_cmt }"| &&
+        |"comment":"{ lv_cmt }",| &&
+        |"removeDate":"{ iv_end_iso }"| &&
       |\}]| &&
     |\}|.
 
