@@ -354,7 +354,10 @@ FORM list_and_pick_access_profile
         lv_code   TYPE i,
         lt_aps    TYPE STANDARD TABLE OF ty_ap,
         ls_ap     TYPE ty_ap,
-        lv_choice TYPE i.
+        lt_field  TYPE STANDARD TABLE OF dfies,
+        ls_field  TYPE dfies,
+        lt_return TYPE STANDARD TABLE OF ddshretval,
+        ls_return TYPE ddshretval.
 
   CLEAR: cv_ap_id, cv_ap_label.
 
@@ -383,29 +386,58 @@ FORM list_and_pick_access_profile
     RETURN.
   ENDIF.
 
-  CALL FUNCTION 'POPUP_WITH_TABLE_DISPLAY'
-    EXPORTING
-      endpos_col   = 100
-      endpos_row   = 25
-      startpos_col = 5
-      startpos_row = 5
-      titletext    = 'Selecione access profile'
-    IMPORTING
-      choise       = lv_choice
-    TABLES
-      valuetab     = lt_aps
-    EXCEPTIONS
-      break_off    = 1
-      OTHERS       = 2.
+  " field_tab: NAME first (visible width 60), ID second (returned).
+  " Offsets follow ty_ap layout: id at 0 (32), name at 32 (60).
+  CLEAR ls_field.
+  ls_field-fieldname = 'NAME'.
+  ls_field-langu     = sy-langu.
+  ls_field-position  = 1.
+  ls_field-offset    = 32.
+  ls_field-leng      = 60.
+  ls_field-intlen    = 60.
+  ls_field-inttype   = 'C'.
+  ls_field-outputlen = 40.
+  ls_field-fieldtext = 'Access Profile'.
+  APPEND ls_field TO lt_field.
 
-  IF sy-subrc <> 0 OR lv_choice IS INITIAL.
-    " Cancelled - leave cv_ap_id empty, no error.
+  CLEAR ls_field.
+  ls_field-fieldname = 'ID'.
+  ls_field-langu     = sy-langu.
+  ls_field-position  = 2.
+  ls_field-offset    = 0.
+  ls_field-leng      = 32.
+  ls_field-intlen    = 32.
+  ls_field-inttype   = 'C'.
+  ls_field-outputlen = 32.
+  ls_field-fieldtext = 'GUID'.
+  APPEND ls_field TO lt_field.
+
+  CALL FUNCTION 'F4IF_INT_TABLE_VALUE_REQUEST'
+    EXPORTING
+      retfield        = 'ID'
+      value_org       = 'S'
+      window_title    = 'Selecione access profile'
+    TABLES
+      value_tab       = lt_aps
+      field_tab       = lt_field
+      return_tab      = lt_return
+    EXCEPTIONS
+      parameter_error = 1
+      no_values_found = 2
+      OTHERS          = 3.
+
+  IF sy-subrc <> 0 OR lt_return IS INITIAL.
+    " Cancelled or empty - leave cv_ap_id empty, no error.
     RETURN.
   ENDIF.
 
-  READ TABLE lt_aps INTO ls_ap INDEX lv_choice.
-  cv_ap_id    = ls_ap-id.
-  cv_ap_label = ls_ap-name.
+  READ TABLE lt_return INTO ls_return INDEX 1.
+  cv_ap_id = ls_return-fieldval.
+
+  READ TABLE lt_aps INTO ls_ap WITH KEY id = cv_ap_id.
+  IF sy-subrc = 0.
+    cv_ap_label = ls_ap-name.
+  ENDIF.
 ENDFORM.
 
 FORM check_identity_has_access USING    iv_identity_id TYPE string
