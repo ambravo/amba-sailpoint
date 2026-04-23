@@ -2,10 +2,17 @@
 *& Report  ZAUTH_TO_SAILPOINT
 *& Demo: lançamento de fatura com verificação de acesso em SailPoint.
 *&
-*& The program asks SailPoint ISC whether the declared user already
-*& has the "Contas a Pagar / Accounts Payable" access profile. If yes,
-*& the invoice is "posted". If not, the user is offered the chance to
-*& submit a time-bound (30 day) access request with a justification.
+*& Flow:
+*&   1. F8 -> START-OF-SELECTION runs check_identity_has_access for
+*&      c_needed_ap (Accounts Payable). Already granted -> "Fatura
+*&      lançada" message, end.
+*&   2. Not granted -> POPUP_TO_CONFIRM "Sem permissão. Pedir acesso?".
+*&      Cancel -> end.
+*&   3. Confirm -> GET /v2026/access-profiles full list ->
+*&      F4IF_INT_TABLE_VALUE_REQUEST shows picker. Cancel -> end.
+*&   4. Picked -> POPUP_GET_VALUES (justification + start/end Madrid)
+*&      -> POST /v2026/access-requests -> POPUP_TO_INFORM with the
+*&      HTTP code, request id, validity and any error.
 *&
 *& NO credentials, host or URL live in this source. Everything routes
 *& through an SM59 HTTP destination + OA2C_CONFIG OAuth 2.0 client
@@ -47,16 +54,17 @@
 *& Authorization header is set manually anywhere in this report.
 *&
 *& Endpoints hit:
-*&   /v3/search                identity-has-access check
-*&   /v2026/access-profiles    GET full list (limit=250, sorted by
-*&                             name); user picks one in a popup
-*&   /v2026/access-requests    POST GRANT_ACCESS for the picked AP
+*&   /v3/search                identity-has-access check (always)
+*&   /v2026/access-profiles    GET full list, picker (only if step 2
+*&                             confirmed)
+*&   /v2026/access-requests    POST GRANT_ACCESS (only if step 4)
 *&
 *& Identity: c_identity_id is the PAT owner GUID, resolved once via
 *& /v3/search?indices=identities and pinned in code.
 *&
-*& Technical keywords in EN, user-facing text in PT. The access
-*& profile to request is chosen at runtime from the popup list.
+*& Technical keywords in EN, user-facing text in PT. The needed AP
+*& for FB60 (c_needed_ap) is hardcoded; the AP actually requested
+*& is whatever the user picks in step 3.
 *&---------------------------------------------------------------------*
 REPORT zauth_to_sailpoint.
 
@@ -68,7 +76,10 @@ CONSTANTS:
   c_tz_madrid   TYPE timezone VALUE 'CET',
   " PAT owner identity (Ariel.Bravo, ariel.bravo@gmail.com).
   " Resolved once via /v3/search and pinned here.
-  c_identity_id TYPE string   VALUE '5d2c03e7f1e6423483733c21fe162fa0'.
+  c_identity_id TYPE string   VALUE '5d2c03e7f1e6423483733c21fe162fa0',
+  " Required AP for FB60 vendor invoice posting (Accounts Payable).
+  c_needed_ap   TYPE string   VALUE '229ad688230949f49c90643099ad13e1',
+  c_needed_lbl  TYPE string   VALUE 'Accounts Payable'.
 
 TYPES: BEGIN OF ty_ap,
          id   TYPE c LENGTH 32,
@@ -112,31 +123,43 @@ DATA: gv_ap_id      TYPE string,
 *----------------------------------------------------------------------*
 START-OF-SELECTION.
 
+  " 1. Already authorized? -> mimic invoice posted, done.
+  PERFORM check_identity_has_access USING    c_identity_id
+                                             c_needed_ap
+                                    CHANGING gv_has_access
+                                             gv_err.
+  IF gv_err IS NOT INITIAL.
+    PERFORM inform_err
+      USING 'Falha ao verificar acesso em SailPoint.' gv_err.
+    RETURN.
+  ENDIF.
+
+  IF gv_has_access = abap_true.
+    MESSAGE |Fatura { p_xblnr } lançada na empresa { p_bukrs } | &&
+            |(fornecedor { p_lifnr }, { p_wrbtr } { p_waers }).|
+            TYPE 'S'.
+    RETURN.
+  ENDIF.
+
+  " 2. Not authorized -> ask whether to request access.
+  DATA lv_proceed TYPE abap_bool.
+  PERFORM ask_should_request CHANGING lv_proceed.
+  IF lv_proceed = abap_false.
+    RETURN.
+  ENDIF.
+
+  " 3. List access profiles, user picks one.
   PERFORM list_and_pick_access_profile CHANGING gv_ap_id
                                                 gv_ap_label
                                                 gv_err.
   IF gv_ap_id IS INITIAL.
-    " Empty id + non-empty err -> failure; otherwise the user just
-    " cancelled the picker -> exit silently.
     IF gv_err IS NOT INITIAL.
       PERFORM inform_err USING 'Falha ao listar access profiles.' gv_err.
     ENDIF.
     RETURN.
   ENDIF.
 
-  PERFORM check_identity_has_access USING    c_identity_id
-                                             gv_ap_id
-                                    CHANGING gv_has_access
-                                             gv_err.
-
-  IF gv_has_access = abap_true.
-    MESSAGE |Fatura { p_xblnr } lançada na empresa { p_bukrs } | &&
-            |(fornecedor { p_lifnr }, { p_wrbtr } { p_waers }, | &&
-            |{ gv_ap_label }).|
-            TYPE 'S'.
-    RETURN.
-  ENDIF.
-
+  " 4. Justification + dates, then submit, then feedback popup.
   PERFORM ask_and_submit_request USING c_identity_id gv_ap_id gv_ap_label.
 
 *&---------------------------------------------------------------------*
@@ -243,6 +266,40 @@ FORM ask_and_submit_request USING iv_identity_id TYPE string
   ENDIF.
 
   PERFORM inform USING 'SailPoint' lv_t1 lv_t2 lv_t3 lv_t4.
+ENDFORM.
+
+*&---------------------------------------------------------------------*
+*&  Confirm popup - "you have no access, want to request it?"
+*&---------------------------------------------------------------------*
+FORM ask_should_request CHANGING cv_proceed TYPE abap_bool.
+  DATA: lv_answer   TYPE c LENGTH 1,
+        lv_question TYPE string.
+
+  lv_question = |Não tem permissão "{ c_needed_lbl }" para lançar | &&
+                |faturas na empresa { p_bukrs }.| &&
+                | Pedir acesso ao SailPoint?|.
+
+  CALL FUNCTION 'POPUP_TO_CONFIRM'
+    EXPORTING
+      titlebar              = 'SAP - Sem permissão'
+      text_question         = lv_question
+      text_button_1         = 'Pedir'
+      icon_button_1         = 'ICON_OKAY'
+      text_button_2         = 'Cancelar'
+      icon_button_2         = 'ICON_CANCEL'
+      default_button        = '1'
+      display_cancel_button = ' '
+    IMPORTING
+      answer                = lv_answer
+    EXCEPTIONS
+      text_not_found        = 1
+      OTHERS                = 2.
+
+  IF sy-subrc = 0 AND lv_answer = '1'.
+    cv_proceed = abap_true.
+  ELSE.
+    cv_proceed = abap_false.
+  ENDIF.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
