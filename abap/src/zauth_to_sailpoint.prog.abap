@@ -113,12 +113,15 @@ SELECTION-SCREEN BEGIN OF BLOCK b1 WITH FRAME TITLE TEXT-t01.
 SELECTION-SCREEN END OF BLOCK b1.
 
 *----------------------------------------------------------------------*
-DATA: gv_ap_id      TYPE string,
-      gv_ap_label   TYPE string,
-      gv_has_access TYPE abap_bool,
-      gv_reqid      TYPE string,
-      gv_http       TYPE i,
-      gv_err        TYPE string.
+DATA: gv_ap_id        TYPE string,
+      gv_ap_label     TYPE string,
+      gv_has_access   TYPE abap_bool,
+      gv_reqid        TYPE string,
+      gv_http         TYPE i,
+      gv_err          TYPE string,
+      gv_last_path    TYPE string,
+      gv_last_body    TYPE string,
+      gv_last_resp    TYPE string.
 
 *----------------------------------------------------------------------*
 START-OF-SELECTION.
@@ -264,24 +267,21 @@ FORM ask_and_submit_request USING iv_identity_id TYPE string
     lv_t2 = |ID do pedido: { gv_reqid }|.
     lv_t3 = |Identidade: { c_identity_id }|.
     lv_t4 = |Válido até: { lv_end_iso }|.
-  ELSEIF gv_http = 429.
-    lv_t1 = 'Limite de pedidos excedido (HTTP 429).'.
-    lv_t2 = 'Cabeçalho Retry-After indica o back-off.'.
-    lv_t3 = 'Pode ter disparado workflow de anomalia.'.
-    lv_t4 = ''.
-  ELSEIF gv_http = 0.
-    lv_t1 = 'Falha na comunicação HTTP.'.
-    lv_t2 = gv_err.
-    lv_t3 = |Ver SM59 '{ c_rfc_dest }' e STRUST.|.
-    lv_t4 = ''.
+    PERFORM inform USING 'SailPoint' lv_t1 lv_t2 lv_t3 lv_t4.
   ELSE.
-    lv_t1 = |Pedido rejeitado (HTTP { gv_http }).|.
-    lv_t2 = gv_err.
-    lv_t3 = 'Ver SM21 / ST22 para resposta completa.'.
-    lv_t4 = ''.
+    " Error -> fire MESSAGE TYPE 'I' (info dialog) with the full
+    " debug payload so the user can copy-paste it back for analysis.
+    DATA(lv_dbg) = |HTTP={ gv_http } | &&
+                   |path={ gv_last_path } | &&
+                   |identity={ c_identity_id } | &&
+                   |ap_id={ iv_ap_id } ap_label={ iv_ap_label } | &&
+                   |today={ lv_today } end={ lv_end } | &&
+                   |start_str={ lv_start_str } end_iso={ lv_end_iso } | &&
+                   |REQUEST=>{ gv_last_body }<= | &&
+                   |RESPONSE=>{ gv_last_resp }<= | &&
+                   |ERR=>{ gv_err }<=|.
+    MESSAGE lv_dbg TYPE 'I'.
   ENDIF.
-
-  PERFORM inform USING 'SailPoint' lv_t1 lv_t2 lv_t3 lv_t4.
 ENDFORM.
 
 *&---------------------------------------------------------------------*
@@ -366,6 +366,11 @@ FORM http_exchange USING    iv_path   TYPE string
 
   CLEAR: cv_code, cv_resp, cv_err.
 
+  " Capture last call for the debug MESSAGE shown on errors.
+  gv_last_path = iv_path.
+  gv_last_body = iv_body.
+  CLEAR gv_last_resp.
+
   cl_http_client=>create_by_destination(
     EXPORTING  destination              = c_rfc_dest
     IMPORTING  client                   = lo_http
@@ -423,7 +428,8 @@ FORM http_exchange USING    iv_path   TYPE string
   ENDIF.
 
   lo_http->response->get_status( IMPORTING code = cv_code ).
-  cv_resp = lo_http->response->get_cdata( ).
+  cv_resp      = lo_http->response->get_cdata( ).
+  gv_last_resp = cv_resp.
 ENDFORM.
 
 *======================================================================*
