@@ -143,36 +143,37 @@ while IFS= read -r ITEM; do
   SHORT_REQID="${REQID:0:12}..."
 
   TITLE="${EMOJI} ${ITEMTYPE_LABEL} ${ACTION_VERB} — ${STATE_LABEL}"
-  HEADLINE="**${ITEMNAME}** → ${IDENTITY}"
+  HEADLINE="**${ITEMNAME}** → **${IDENTITY}**"
 
-  # Build FactSet facts conditionally (skip empty).
-  FACTS="$(jq -nc \
-    --arg reqtype "${REQTYPE}"        \
-    --arg state   "${STATE_LABEL}"    \
-    --arg who     "${IDENTITY}"       \
-    --arg what    "${ITEMNAME} (${ITEMTYPE_LABEL})" \
-    --arg req     "${NICE_CREATED:-$NICE_MOD}"      \
-    --arg until   "${NICE_REMOVE}"    \
-    --arg id      "${SHORT_REQID}"    \
-    --arg reqname "${REQ_NAME}"       '
-    [
-      { title: "Type",         value: $reqtype },
-      { title: "State",        value: $state },
-      { title: "Identity",     value: $who },
-      { title: "Access Item",  value: $what }
+  # Build body lines as flat TextBlocks. The earlier Container +
+  # FactSet variant was rejected by Teams ("cards.unsupported") - this
+  # shape is the one the initial working test used.
+  BODY_ITEMS="$(jq -nc \
+    --arg title    "$TITLE"    \
+    --arg headline "$HEADLINE" \
+    --arg reqtype  "${REQTYPE}"                                    \
+    --arg state    "${STATE_LABEL}"                                \
+    --arg item     "${ITEMNAME} (${ITEMTYPE_LABEL})"               \
+    --arg req      "${NICE_CREATED:-$NICE_MOD}"                    \
+    --arg until    "${NICE_REMOVE}"                                \
+    --arg id       "${SHORT_REQID}"                                \
+    --arg reqname  "${REQ_NAME}"                                   \
+    --arg comment  "${COMMENT}"                                    '
+    [ { type: "TextBlock", size: "Large",  weight: "Bolder", text: $title,    wrap: true }
+    , { type: "TextBlock", size: "Medium", text: $headline, wrap: true }
+    , { type: "TextBlock", text: ("**Type:** "        + $reqtype), wrap: true }
+    , { type: "TextBlock", text: ("**State:** "       + $state),   wrap: true }
+    , { type: "TextBlock", text: ("**Access item:** " + $item),    wrap: true }
     ]
-    + (if $reqname != ""    then [ { title: "Request Name", value: $reqname } ] else [] end)
-    + (if $req != ""        then [ { title: "Requested",    value: $req     } ] else [] end)
-    + (if $until != ""      then [ { title: "Valid Until",  value: $until   } ] else [] end)
-    + [ { title: "Request ID", value: $id } ]
+    + (if $reqname != "" then [ { type: "TextBlock", text: ("**Request:** "    + $reqname), wrap: true } ] else [] end)
+    + (if $req     != "" then [ { type: "TextBlock", text: ("**Requested:** "  + $req),     wrap: true } ] else [] end)
+    + (if $until   != "" then [ { type: "TextBlock", text: ("**Valid until:** "+ $until),   wrap: true } ] else [] end)
+    +                     [ { type: "TextBlock", text: ("**Request ID:** " + $id),   wrap: true, isSubtle: true } ]
+    + (if $comment != "" then [ { type: "TextBlock", text: ("_Justification:_ " + $comment), wrap: true, isSubtle: true } ] else [] end)
   ')"
 
   CARD="$(jq -nc \
-    --arg title    "$TITLE"    \
-    --arg headline "$HEADLINE" \
-    --arg style    "$STYLE"    \
-    --arg comment  "$COMMENT"  \
-    --argjson facts "$FACTS" '{
+    --argjson body "$BODY_ITEMS" '{
       type: "message",
       attachments: [{
         contentType: "application/vnd.microsoft.card.adaptive",
@@ -180,26 +181,7 @@ while IFS= read -r ITEM; do
           "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
           type: "AdaptiveCard",
           version: "1.4",
-          body: ([
-            {
-              type: "Container",
-              style: $style,
-              items: [
-                { type: "TextBlock", size: "Large",  weight: "Bolder", text: $title, wrap: true },
-                { type: "TextBlock", size: "Medium", text: $headline, wrap: true }
-              ]
-            },
-            { type: "FactSet", facts: $facts }
-          ] + (if $comment != "" then [
-            {
-              type: "Container",
-              spacing: "Medium",
-              items: [
-                { type: "TextBlock", text: "_Justification_", isSubtle: true, weight: "Bolder", size: "Small" },
-                { type: "TextBlock", text: $comment, wrap: true }
-              ]
-            }
-          ] else [] end))
+          body: $body
         }
       }]
     }')"
