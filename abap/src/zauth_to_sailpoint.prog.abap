@@ -225,9 +225,9 @@ FORM ask_and_submit_request USING iv_identity_id TYPE string
       OTHERS          = 2.
 
   IF sy-subrc <> 0.
+    DATA(lv_popup_err) = |sy-subrc = { sy-subrc }, ERROR_IN_FIELDS=1, OTHERS=2|.
     PERFORM inform_err
-      USING 'POPUP_GET_VALUES falhou (justificação / datas).'
-            |sy-subrc = { sy-subrc }, ERROR_IN_FIELDS=1, OTHERS=2|.
+      USING 'POPUP_GET_VALUES falhou (justificação / datas).' lv_popup_err.
     RETURN.
   ENDIF.
 
