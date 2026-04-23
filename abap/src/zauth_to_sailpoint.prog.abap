@@ -202,9 +202,12 @@ FORM ask_and_submit_request USING iv_identity_id TYPE string
   ls_field-value     = lv_today.
   APPEND ls_field TO lt_fields.
 
+  " End date: reuse BKPF-BUDAT (DATS). Earlier we had BKPF-VALUT here
+  " but VALUT does not exist on the BKPF header (it lives on BSEG /
+  " BSAS); POPUP_GET_VALUES then raises ERROR_IN_FIELDS = 1.
   CLEAR ls_field.
   ls_field-tabname   = 'BKPF'.
-  ls_field-fieldname = 'VALUT'.
+  ls_field-fieldname = 'BUDAT'.
   ls_field-fieldtext = 'Data de fim'.
   ls_field-value     = lv_end.
   APPEND ls_field TO lt_fields.
@@ -222,7 +225,15 @@ FORM ask_and_submit_request USING iv_identity_id TYPE string
       error_in_fields = 1
       OTHERS          = 2.
 
-  IF sy-subrc <> 0 OR lv_rc = 'A'.
+  IF sy-subrc <> 0.
+    PERFORM inform_err
+      USING 'POPUP_GET_VALUES falhou (justificação / datas).'
+            |sy-subrc = { sy-subrc }, ERROR_IN_FIELDS=1, OTHERS=2|.
+    RETURN.
+  ENDIF.
+
+  IF lv_rc = 'A'.
+    " Cancelled by user - silent exit.
     RETURN.
   ENDIF.
 
