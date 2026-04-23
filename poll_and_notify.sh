@@ -3,14 +3,16 @@
 # one to a Teams channel via the Power Automate incoming webhook.
 #
 # Usage:
-#   source .env
 #   ./poll_and_notify.sh                                    # one-shot
 #   while true; do ./poll_and_notify.sh; sleep 60; done     # loop every minute
+#
+# Auto-loads .env (next to the script) if present, so no need to
+# `source .env` first. Existing env vars take precedence.
 #
 # State file (.poll_state by default) keeps the ISO 8601 timestamp of
 # the last status we posted, so re-runs only post new changes.
 #
-# Required env:
+# Required env (from .env or shell):
 #   SAILPOINT_TENANT_API
 #   SAILPOINT_CLIENT_ID       (PAT id or regular OAuth client id)
 #   SAILPOINT_CLIENT_SECRET   (PAT secret or client secret)
@@ -18,12 +20,20 @@
 
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$SCRIPT_DIR/.env"
+  set +a
+fi
+
 : "${SAILPOINT_TENANT_API:?}"
 : "${SAILPOINT_CLIENT_ID:?}"
 : "${SAILPOINT_CLIENT_SECRET:?}"
 : "${TEAMS_WEBHOOK:?}"
 
-STATE_FILE="${STATE_FILE:-$(dirname "$0")/.poll_state}"
+STATE_FILE="${STATE_FILE:-$SCRIPT_DIR/.poll_state}"
 
 # On first run, seed "last seen" to now - 1h so we don't spam history.
 if [[ -f "$STATE_FILE" ]]; then
