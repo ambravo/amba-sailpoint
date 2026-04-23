@@ -3,8 +3,16 @@
 # one to a Teams channel via the Power Automate incoming webhook.
 #
 # Usage:
-#   ./poll_and_notify.sh                                    # one-shot
-#   while true; do ./poll_and_notify.sh; sleep 60; done     # loop every minute
+#   ./poll_and_notify.sh [WINDOW_HOURS]
+#
+#   WINDOW_HOURS   how far back to look on the first run (default 4).
+#                  Ignored once .poll_state exists — delete the state
+#                  file to reset the cursor.
+#
+# Examples:
+#   ./poll_and_notify.sh                           # 4h lookback
+#   ./poll_and_notify.sh 24                        # 24h lookback
+#   while true; do ./poll_and_notify.sh; sleep 60; done
 #
 # Auto-loads .env (next to the script) if present, so no need to
 # `source .env` first. Existing env vars take precedence.
@@ -39,13 +47,15 @@ fi
 : "${TEAMS_WEBHOOK:?}"
 
 STATE_FILE="${STATE_FILE:-$SCRIPT_DIR/.poll_state}"
+WINDOW_HOURS="${1:-4}"
 
-# On first run, seed "last seen" to now - 1h so we don't spam history.
+# On first run (no state file), seed "last seen" to now - WINDOW_HOURS.
 if [[ -f "$STATE_FILE" ]]; then
   LAST="$(cat "$STATE_FILE")"
 else
-  LAST="$(date -u -v-1H +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null \
-          || date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%S.000Z)"
+  LAST="$(date -u -v-${WINDOW_HOURS}H +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null \
+          || date -u -d "${WINDOW_HOURS} hours ago" +%Y-%m-%dT%H:%M:%S.000Z)"
+  echo "seeded lookback: ${WINDOW_HOURS}h -> ${LAST}"
 fi
 
 # ---------------------------------------------------------------------
