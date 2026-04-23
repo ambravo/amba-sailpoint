@@ -119,7 +119,6 @@ while IFS= read -r ITEM; do
   [[ ! "$MOD" > "$LAST" ]] && continue
 
   REQTYPE="$(jq -r '.requestType // "?"'                              <<<"$ITEM")"
-  STATE="$(jq -r '.accessRequestPhases[-1].state // .state // "?"'    <<<"$ITEM")"
   REQID="$(jq -r '.accessRequestId // .id // "?"'                     <<<"$ITEM")"
   REQ_NAME="$(jq -r '.name // ""'                                     <<<"$ITEM")"
   CREATED="$(jq -r '.created // ""'                                   <<<"$ITEM")"
@@ -129,23 +128,47 @@ while IFS= read -r ITEM; do
   ITEMTYPE="$(jq -r '(.requestedItems[0].type // "?")'                <<<"$ITEM")"
   COMMENT="$(jq -r '(.requestedItems[0].comment // "")'               <<<"$ITEM")"
 
+  # Overall request lifecycle state (authoritative):
+  #   EXECUTING -> still moving through phases
+  #   COMPLETED -> finished (check phase results to see approved vs rejected)
+  #   CANCELLED/TERMINATED -> stopped
+  EXEC_STATE="$(jq -r '.executionStatus // .state // "?"'             <<<"$ITEM")"
+
+  # Any item/phase ended with a rejection?
+  HAS_REJECTED="$(jq -r '[.requestedItems[]?.accessRequestPhases[]?.result] | any(. == "REJECTED")' <<<"$ITEM")"
+
+  # Name + state of the current (last) phase - tells us if we're in
+  # approval or provisioning while EXECUTING.
+  LAST_PHASE_NAME="$(jq -r  '(.requestedItems[0].accessRequestPhases[-1].name   // "")' <<<"$ITEM")"
+  LAST_PHASE_STATE="$(jq -r '(.requestedItems[0].accessRequestPhases[-1].state  // "")' <<<"$ITEM")"
+  LAST_PHASE_RESULT="$(jq -r '(.requestedItems[0].accessRequestPhases[-1].result // "")' <<<"$ITEM")"
+
   # --- Human-friendly mappings ----------------------------------------
   case "$REQTYPE" in
-    GRANT_ACCESS)  ACTION_VERB="granted"   ;;
-    REVOKE_ACCESS) ACTION_VERB="revoked"   ;;
-    *)             ACTION_VERB="$REQTYPE"  ;;
+    GRANT_ACCESS)  ACTION_VERB="grant"   ;;
+    REVOKE_ACCESS) ACTION_VERB="revoke"  ;;
+    *)             ACTION_VERB="$REQTYPE" ;;
   esac
 
-  case "$STATE" in
-    APPROVED|PROVISIONED|EXECUTING|COMPLETED|COMPLETED_SUCCESS|SUCCESS)
-      EMOJI="🟢"; STYLE="good";     STATE_LABEL="Approved" ;;
-    REJECTED|CANCELLED|DENIED|FAILED|COMPLETED_ERROR|ERROR)
-      EMOJI="🔴"; STYLE="attention";STATE_LABEL="Rejected" ;;
-    PENDING|WAITING|NOT_STARTED)
-      EMOJI="⏳"; STYLE="warning";  STATE_LABEL="Pending"  ;;
-    *)
-      EMOJI="⚪"; STYLE="default";  STATE_LABEL="$STATE"   ;;
-  esac
+  # Decide emoji + label from the combination of EXEC_STATE + rejections
+  # + current phase. Prefer "awaiting approval" / "provisioning" over
+  # the generic "in progress" when EXECUTING.
+  if   [[ "$EXEC_STATE" == "CANCELLED" || "$EXEC_STATE" == "TERMINATED" ]]; then
+    EMOJI="⚫"; STYLE="attention"; STATE_LABEL="Cancelled"
+  elif [[ "$HAS_REJECTED" == "true" ]]; then
+    EMOJI="🔴"; STYLE="attention"; STATE_LABEL="Rejected"
+  elif [[ "$EXEC_STATE" == "EXECUTING" ]]; then
+    EMOJI="⏳"; STYLE="warning"
+    case "$LAST_PHASE_NAME" in
+      *APPROVAL*)     STATE_LABEL="Awaiting approval" ;;
+      *PROVISION*)    STATE_LABEL="Provisioning"      ;;
+      *)              STATE_LABEL="In progress"       ;;
+    esac
+  elif [[ "$EXEC_STATE" == "COMPLETED" ]]; then
+    EMOJI="🟢"; STYLE="good";      STATE_LABEL="Approved and provisioned"
+  else
+    EMOJI="⚪"; STYLE="default";   STATE_LABEL="$EXEC_STATE"
+  fi
 
   case "$ITEMTYPE" in
     ACCESS_PROFILE) ITEMTYPE_LABEL="Access Profile" ;;
@@ -164,7 +187,9 @@ while IFS= read -r ITEM; do
   NICE_REMOVE="$(fmt_ts "$REMOVE_DATE")"
   SHORT_REQID="${REQID:0:12}..."
 
-  TITLE="${EMOJI} ${ITEMTYPE_LABEL} ${ACTION_VERB} — ${STATE_LABEL}"
+  # Capitalize the action verb for the title (grant -> Grant).
+  ACTION_TITLE="$(tr '[:lower:]' '[:upper:]' <<< "${ACTION_VERB:0:1}")${ACTION_VERB:1}"
+  TITLE="${EMOJI} ${ACTION_TITLE} ${ITEMTYPE_LABEL} • ${STATE_LABEL}"
   HEADLINE="**${ITEMNAME}** → **${IDENTITY}**"
 
   # Build body lines as flat TextBlocks. The earlier Container +
@@ -210,14 +235,20 @@ while IFS= read -r ITEM; do
 
   if (( VERBOSE )); then
     echo "---- event -------------------------------------------------" >&2
-    echo "modified   : $MOD"          >&2
-    echo "requestType: $REQTYPE"      >&2
-    echo "state      : $STATE"        >&2
-    echo "identity   : $IDENTITY"     >&2
-    echo "item       : $ITEMNAME ($ITEMTYPE)"  >&2
-    echo "reqId      : $REQID"        >&2
-    echo "removeDate : $REMOVE_DATE"  >&2
-    echo "comment    : $COMMENT"      >&2
+    echo "modified           : $MOD"               >&2
+    echo "requestType        : $REQTYPE"           >&2
+    echo "executionStatus    : $EXEC_STATE"        >&2
+    echo "hasRejected        : $HAS_REJECTED"      >&2
+    echo "lastPhase name     : $LAST_PHASE_NAME"   >&2
+    echo "lastPhase state    : $LAST_PHASE_STATE"  >&2
+    echo "lastPhase result   : $LAST_PHASE_RESULT" >&2
+    echo "-> emoji           : $EMOJI"             >&2
+    echo "-> stateLabel      : $STATE_LABEL"       >&2
+    echo "identity           : $IDENTITY"          >&2
+    echo "item               : $ITEMNAME ($ITEMTYPE)" >&2
+    echo "reqId              : $REQID"             >&2
+    echo "removeDate         : $REMOVE_DATE"       >&2
+    echo "comment            : $COMMENT"           >&2
     echo "-- card --" >&2
     echo "$CARD" | jq . >&2 2>/dev/null || echo "$CARD" >&2
     echo "-- end event --" >&2
