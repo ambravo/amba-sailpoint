@@ -2,3 +2,4 @@
 *.log
 token.txt
 .poll_state
+.poll_posted

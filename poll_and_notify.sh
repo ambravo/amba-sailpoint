@@ -50,6 +50,7 @@ fi
 : "${TEAMS_WEBHOOK:?}"
 
 STATE_FILE="${STATE_FILE:-$SCRIPT_DIR/.poll_state}"
+POSTED_FILE="${POSTED_FILE:-$SCRIPT_DIR/.poll_posted}"
 
 # --- Parse args (order-independent) ---
 VERBOSE=0
@@ -64,6 +65,16 @@ while (( $# )); do
 done
 
 log_verbose() { (( VERBOSE )) && printf "[verbose] %s\n" "$*" >&2 || true; }
+
+# Load the set of already-posted (requestId|stateLabel) keys so we
+# can skip events we've already notified about, even if their
+# .modified timestamp keeps bumping on each phase transition.
+declare -A POSTED
+if [[ -f "$POSTED_FILE" ]]; then
+  while IFS= read -r k; do
+    [[ -n "$k" ]] && POSTED["$k"]=1
+  done < "$POSTED_FILE"
+fi
 
 # On first run (no state file), seed "last seen" to now - WINDOW_HOURS.
 if [[ -f "$STATE_FILE" ]]; then
@@ -111,12 +122,16 @@ fi
 # 3. For each entry newer than LAST, POST an Adaptive Card to Teams.
 # ---------------------------------------------------------------------
 NEW_LAST="$LAST"
-POSTED=0
+POSTED_COUNT=0
 
 while IFS= read -r ITEM; do
   MOD="$(jq -r '.modified // ""'     <<<"$ITEM")"
   [[ -z "$MOD" ]] && continue
   [[ ! "$MOD" > "$LAST" ]] && continue
+
+  # Per-event reqId+stateLabel key used for dedup; computed again
+  # below after we know STATE_LABEL. The pre-STATE_LABEL copy just
+  # guards the cheap timestamp check above.
 
   REQTYPE="$(jq -r '.requestType // "?"'                              <<<"$ITEM")"
   REQID="$(jq -r '.accessRequestId // .id // "?"'                     <<<"$ITEM")"
@@ -192,6 +207,16 @@ while IFS= read -r ITEM; do
   TITLE="${EMOJI} ${ACTION_TITLE} ${ITEMTYPE_LABEL} • ${STATE_LABEL}"
   HEADLINE="**${ITEMNAME}** → **${IDENTITY}**"
 
+  # Dedup: same (reqId + human state label) means we already told
+  # Teams about this transition - skip. Every real state change flips
+  # STATE_LABEL so we still notify once per transition.
+  DEDUP_KEY="${REQID}|${STATE_LABEL}"
+  if [[ -n "${POSTED[$DEDUP_KEY]:-}" ]]; then
+    log_verbose "skip already-posted: $DEDUP_KEY"
+    [[ "$MOD" > "$NEW_LAST" ]] && NEW_LAST="$MOD"
+    continue
+  fi
+
   # Build body lines as flat TextBlocks. The earlier Container +
   # FactSet variant was rejected by Teams ("cards.unsupported") - this
   # shape is the one the initial working test used.
@@ -258,8 +283,13 @@ while IFS= read -r ITEM; do
     -H "Content-Type: application/json" \
     -d "$CARD" > /dev/null
 
-  echo "Posted: ${REQTYPE} ${STATE} ${IDENTITY} / ${ITEMNAME}  [${MOD}]"
-  POSTED=$((POSTED + 1))
+  echo "Posted: ${REQTYPE} ${STATE_LABEL} ${IDENTITY} / ${ITEMNAME}  [${MOD}]"
+
+  # Record in dedup set and persist immediately so a crash mid-loop
+  # doesn't cause replays.
+  POSTED["$DEDUP_KEY"]=1
+  echo "$DEDUP_KEY" >> "$POSTED_FILE"
+  POSTED_COUNT=$((POSTED_COUNT + 1))
 
   [[ "$MOD" > "$NEW_LAST" ]] && NEW_LAST="$MOD"
 done < <(echo "$RESP" | jq -c '.[]')
@@ -271,4 +301,4 @@ if [[ "$NEW_LAST" != "$LAST" ]]; then
   echo "$NEW_LAST" > "$STATE_FILE"
 fi
 
-echo "poll complete — posted=${POSTED} last_seen=${NEW_LAST}"
+echo "poll complete — posted=${POSTED_COUNT} last_seen=${NEW_LAST}"
