@@ -399,20 +399,20 @@ FORM http_exchange USING    iv_path   TYPE string
     uri     = iv_path ).
 
   lo_http->request->set_method( iv_method ).
-  " Force UTF-8 on the wire. set_cdata uses the system codepage by
-  " default; on a non-UTF-8 system, Portuguese chars (ç, ã, í) in the
-  " comment go out as Latin-1 bytes and SailPoint's JSON parser rejects
-  " with HTTP 400 "Bad request syntax".
   DATA(lv_ctype) = iv_ctype.
   IF lv_ctype CS 'json' AND NOT lv_ctype CS 'charset='.
     lv_ctype = |{ lv_ctype }; charset=utf-8|.
   ENDIF.
   lo_http->request->set_header_field( name = 'Content-Type' value = lv_ctype ).
+  " The sample SailPoint request includes an explicit Accept header;
+  " some endpoints reject without it.
+  lo_http->request->set_header_field( name = 'Accept' value = 'application/json' ).
   IF iv_body IS NOT INITIAL.
-    DATA(lv_xbody) = cl_abap_codepage=>convert_to(
-      source   = iv_body
-      codepage = 'UTF-8' ).
-    lo_http->request->set_data( lv_xbody ).
+    " set_cdata writes a string and lets the kernel handle codepage
+    " conversion + Content-Length. On Unicode NW the outbound bytes
+    " are UTF-8. Earlier I bypassed this with set_data(xstring) which
+    " may have skipped Content-Length / chunking fix-up.
+    lo_http->request->set_cdata( iv_body ).
   ENDIF.
 
   lo_http->send( EXCEPTIONS http_communication_failure = 1
